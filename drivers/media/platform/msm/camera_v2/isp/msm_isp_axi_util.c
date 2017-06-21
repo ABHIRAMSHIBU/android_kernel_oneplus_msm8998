@@ -2469,6 +2469,8 @@ static int msm_isp_update_stream_bandwidth(
 int msm_isp_ab_ib_update_lpm_mode(struct vfe_device *vfe_dev, void *arg)
 {
 	int i, rc = 0;
+	uint64_t total_bandwidth = 0;
+	int vfe_idx;
 	uint32_t intf;
 	unsigned long flags;
 	struct msm_vfe_axi_stream *stream_info;
@@ -2498,10 +2500,14 @@ int msm_isp_ab_ib_update_lpm_mode(struct vfe_device *vfe_dev, void *arg)
 			intf = SRC_TO_INTF(stream_info->stream_src);
 			vfe_dev->axi_data.src_info[intf].lpm =
 				ab_ib_vote->lpm_mode;
-			if (stream_info->lpm_mode) {
-				spin_unlock_irqrestore(&stream_info->lock,
-							flags);
-				continue;
+			if (stream_info->state == ACTIVE) {
+				vfe_idx =
+					msm_isp_get_vfe_idx_for_stream(vfe_dev,
+						stream_info);
+					total_bandwidth +=
+						stream_info->bandwidth[
+							vfe_idx];
+				stream_info->state = PAUSED;
 			}
 			stream_info->lpm_mode = ab_ib_vote->lpm_mode;
 			spin_unlock_irqrestore(&stream_info->lock, flags);
@@ -2518,10 +2524,14 @@ int msm_isp_ab_ib_update_lpm_mode(struct vfe_device *vfe_dev, void *arg)
 			intf = SRC_TO_INTF(stream_info->stream_src);
 			vfe_dev->axi_data.src_info[intf].lpm =
 				ab_ib_vote->lpm_mode;
-			if (stream_info->lpm_mode == 0) {
-				spin_unlock_irqrestore(&stream_info->lock,
-							flags);
-				continue;
+			if (stream_info->state == PAUSED) {
+				vfe_idx =
+					msm_isp_get_vfe_idx_for_stream(vfe_dev,
+						stream_info);
+					total_bandwidth +=
+						stream_info->bandwidth[
+							vfe_idx];
+				stream_info->state = ACTIVE;
 			}
 			stream_info->lpm_mode = 0;
 			spin_unlock_irqrestore(&stream_info->lock, flags);
@@ -2939,7 +2949,7 @@ static void __msm_isp_stop_axi_streams(struct vfe_device *vfe_dev,
 		 * be INACTIVE
 		 */
 		intf = SRC_TO_INTF(stream_info->stream_src);
-		if (stream_info->lpm_mode == 0 &&
+		if ((!vfe_dev->axi_data.src_info[intf].lpm) ||
 			stream_info->state != PAUSED) {
 			while (stream_info->state != ACTIVE)
 				__msm_isp_axi_stream_update(stream_info,
@@ -2957,9 +2967,11 @@ static void __msm_isp_stop_axi_streams(struct vfe_device *vfe_dev,
 				vfe_dev->hw_info->vfe_ops.axi_ops.
 				clear_wm_irq_mask(vfe_dev, stream_info);
 		}
-		init_completion(&stream_info->inactive_comp);
-		stream_info->state = STOP_PENDING;
-		if (stream_info->lpm_mode ||
+		if (stream_info->state == ACTIVE &&
+			!vfe_dev->axi_data.src_info[intf].lpm) {
+			init_completion(&stream_info->inactive_comp);
+			stream_info->state = STOP_PENDING;
+		} else if (vfe_dev->axi_data.src_info[intf].lpm ||
 			stream_info->state == PAUSED) {
 			/* don't wait for reg update */
 			while (stream_info->state != INACTIVE)
@@ -3135,14 +3147,7 @@ static int msm_isp_start_axi_stream(struct vfe_device *vfe_dev_ioctl,
 					cfg_wm_irq_mask(vfe_dev, stream_info);
 			}
 		}
-		intf = SRC_TO_INTF(stream_info->stream_src);
-		stream_info->lpm_mode = vfe_dev_ioctl->
-					axi_data.src_info[intf].lpm;
-		if (stream_info->lpm_mode == 0) {
-			spin_unlock_irqrestore(&stream_info->lock, flags);
-			msm_isp_update_stream_bandwidth(stream_info, 1);
-			spin_lock_irqsave(&stream_info->lock, flags);
-		}
+		 intf = SRC_TO_INTF(stream_info->stream_src);
 		init_completion(&stream_info->active_comp);
 		stream_info->state = START_PENDING;
 		msm_isp_update_intf_stream_cnt(stream_info, 1);
@@ -3152,7 +3157,7 @@ static int msm_isp_start_axi_stream(struct vfe_device *vfe_dev_ioctl,
 			vfe_dev_ioctl->pdev->id);
 		if (src_state) {
 			src_mask |= (1 << SRC_TO_INTF(stream_info->stream_src));
-			if (stream_info->lpm_mode) {
+			if (vfe_dev_ioctl->axi_data.src_info[intf].lpm) {
 				while (stream_info->state != ACTIVE)
 					__msm_isp_axi_stream_update(
 						stream_info, &timestamp);

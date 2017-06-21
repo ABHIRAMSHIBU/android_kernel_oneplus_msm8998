@@ -285,6 +285,7 @@ enum {
 	UFSHCD_INT_CLEAR,
 };
 
+
 #define DEFAULT_UFSHCD_DBG_PRINT_EN	UFSHCD_DBG_PRINT_ALL
 
 #define ufshcd_set_eh_in_progress(h) \
@@ -516,14 +517,52 @@ static inline void ufshcd_remove_non_printable(char *val)
 		*val = ' ';
 }
 
-#define UFSHCD_MAX_CMD_LOGGING	100
+/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+struct ufshcd_cmd_log_entry {
+	char *str;	/* context like "send", "complete" */
+	char *cmd_type;	/* "scsi", "query", "nop", "dme" */
+	u8 lun;
+	u8 cmd_id;
+	struct request *req;
+	unsigned long start_time;
+	sector_t lba;
+	int transfer_len;
+	u8 idn;		/* used only for query idn */
+	u32 doorbell;
+	unsigned int tag;
+	ktime_t tstamp;
+	u32 outstanding_reqs;
+	u32 sequence_number;
+};
 
+#define UFSHCD_MAX_CMD_LOGGING	10000
+
+static struct ufshcd_cmd_log {
+	struct ufshcd_cmd_log_entry *entries;
+	int index;
+	u32 sequence_number;
+} ufshcd_cmd_log;
+
+static void ufshcd_log_cmd_init(struct ufs_hba *hba)
+{
+	/* Allocate log entries */
+	if (!ufshcd_cmd_log.entries) {
+		ufshcd_cmd_log.entries = kzalloc(UFSHCD_MAX_CMD_LOGGING *
+			sizeof(struct ufshcd_cmd_log_entry), GFP_KERNEL);
+		if (!ufshcd_cmd_log.entries)
+			return;
+		pr_info("%s: ufshcd_cmd_log.entries initialized\n", __func__);
+	}
+}
+/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+
+/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 #ifdef CONFIG_TRACEPOINTS
 static inline void ufshcd_add_command_trace(struct ufs_hba *hba,
 			struct ufshcd_cmd_log_entry *entry, u8 opcode)
 {
 	if (trace_ufshcd_command_enabled()) {
-		u32 intr = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
+		u32 intr = 0xDEADBEEF;
 
 		trace_ufshcd_command(dev_name(hba->dev), entry->str, entry->tag,
 				     entry->doorbell, entry->transfer_len, intr,
@@ -537,78 +576,66 @@ static inline void ufshcd_add_command_trace(struct ufs_hba *hba,
 }
 #endif
 
-#ifdef CONFIG_SCSI_UFSHCD_CMD_LOGGING
-static void ufshcd_cmd_log_init(struct ufs_hba *hba)
-{
-	/* Allocate log entries */
-	if (!hba->cmd_log.entries) {
-		hba->cmd_log.entries = kzalloc(UFSHCD_MAX_CMD_LOGGING *
-			sizeof(struct ufshcd_cmd_log_entry), GFP_KERNEL);
-		if (!hba->cmd_log.entries)
-			return;
-		dev_dbg(hba->dev, "%s: cmd_log.entries initialized\n",
-				__func__);
-	}
-}
-
-static void __ufshcd_cmd_log(struct ufs_hba *hba, char *str, char *cmd_type,
+static void __ufshcd_log_cmd(struct ufs_hba *hba, char *str, char *cmd_type,
 			     unsigned int tag, u8 cmd_id, u8 idn, u8 lun,
-			     sector_t lba, int transfer_len, u8 opcode)
+			     sector_t lba, int transfer_len, u8 opcode,
+			     struct request *req)
 {
 	struct ufshcd_cmd_log_entry *entry;
 
-	if (!hba->cmd_log.entries)
+	if (!ufshcd_cmd_log.entries)
 		return;
 
-	entry = &hba->cmd_log.entries[hba->cmd_log.pos];
+	entry = &ufshcd_cmd_log.entries[ufshcd_cmd_log.index];
 	entry->lun = lun;
 	entry->str = str;
 	entry->cmd_type = cmd_type;
 	entry->cmd_id = cmd_id;
+	entry->req = req;
+	if (req)
+		entry->start_time = req->start_time;
+	else
+		entry->start_time = 0;
 	entry->lba = lba;
 	entry->transfer_len = transfer_len;
 	entry->idn = idn;
-	entry->doorbell = ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_DOOR_BELL);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	entry->tag = tag;
 	entry->tstamp = ktime_get();
 	entry->outstanding_reqs = hba->outstanding_reqs;
-	entry->seq_num = hba->cmd_log.seq_num;
-	hba->cmd_log.seq_num++;
-	hba->cmd_log.pos =
-			(hba->cmd_log.pos + 1) % UFSHCD_MAX_CMD_LOGGING;
+	entry->sequence_number = ufshcd_cmd_log.sequence_number;
+	ufshcd_cmd_log.sequence_number++;
+	ufshcd_cmd_log.index =
+			(ufshcd_cmd_log.index + 1) % UFSHCD_MAX_CMD_LOGGING;
 
 	ufshcd_add_command_trace(hba, entry, opcode);
 }
 
-static void ufshcd_cmd_log(struct ufs_hba *hba, char *str, char *cmd_type,
+static void ufshcd_log_cmd(struct ufs_hba *hba, char *str, char *cmd_type,
 	unsigned int tag, u8 cmd_id, u8 idn)
 {
-	__ufshcd_cmd_log(hba, str, cmd_type, tag, cmd_id, idn,
-			 0xff, (sector_t)-1, -1, -1);
+	__ufshcd_log_cmd(hba, str, cmd_type, tag, cmd_id, idn,
+			 0xff, (sector_t)-1, -1, -1, NULL);
 }
 
-static void ufshcd_dme_cmd_log(struct ufs_hba *hba, char *str, u8 cmd_id)
-{
-	ufshcd_cmd_log(hba, str, "dme", 0xff, cmd_id, 0xff);
-}
-
-static void ufshcd_cmd_log_print(struct ufs_hba *hba)
+static void ufshcd_cmd_log_print(void)
 {
 	int i;
 	int pos;
 	struct ufshcd_cmd_log_entry *p;
 
-	if (!hba->cmd_log.entries)
+	if (!ufshcd_cmd_log.entries)
 		return;
 
-	pos = hba->cmd_log.pos;
+	pos = ufshcd_cmd_log.index;
 	for (i = 0; i < UFSHCD_MAX_CMD_LOGGING; i++) {
-		p = &hba->cmd_log.entries[pos];
+		p = &ufshcd_cmd_log.entries[pos];
 		pos = (pos + 1) % UFSHCD_MAX_CMD_LOGGING;
 
 		if (ktime_to_us(p->tstamp)) {
 			pr_err("%s: %s: seq_no=%u lun=0x%x cmd_id=0x%02x lba=0x%llx txfer_len=%d tag=%u, doorbell=0x%x outstanding=0x%x idn=%d time=%lld us\n",
-				p->cmd_type, p->str, p->seq_num,
+				p->cmd_type, p->str, p->sequence_number,
 				p->lun, p->cmd_id, (unsigned long long)p->lba,
 				p->transfer_len, p->tag, p->doorbell,
 				p->outstanding_reqs, p->idn,
@@ -617,44 +644,23 @@ static void ufshcd_cmd_log_print(struct ufs_hba *hba)
 		}
 	}
 }
-#else
-static void ufshcd_cmd_log_init(struct ufs_hba *hba)
-{
-}
+/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
-static void __ufshcd_cmd_log(struct ufs_hba *hba, char *str, char *cmd_type,
-			     unsigned int tag, u8 cmd_id, u8 idn, u8 lun,
-			     sector_t lba, int transfer_len, u8 opcode)
-{
-	struct ufshcd_cmd_log_entry entry;
-
-	entry.str = str;
-	entry.lba = lba;
-	entry.transfer_len = transfer_len;
-	entry.doorbell = ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_DOOR_BELL);
-	entry.tag = tag;
-
-	ufshcd_add_command_trace(hba, &entry, opcode);
-}
-
-static void ufshcd_dme_cmd_log(struct ufs_hba *hba, char *str, u8 cmd_id)
-{
-}
-
-static void ufshcd_cmd_log_print(struct ufs_hba *hba)
-{
-}
-#endif
-
-#ifdef CONFIG_TRACEPOINTS
+/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 static inline void ufshcd_cond_add_cmd_trace(struct ufs_hba *hba,
 					unsigned int tag, const char *str)
+/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 {
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	struct ufshcd_lrb *lrbp;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	char *cmd_type;
 	u8 opcode = 0;
-	u8 cmd_id = 0, idn = 0;
+	u8 cmd_id, idn = 0;
 	sector_t lba = -1;
+	struct request *req = NULL;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	int transfer_len = -1;
 
 	lrbp = &hba->lrb[tag];
@@ -673,10 +679,11 @@ static inline void ufshcd_cond_add_cmd_trace(struct ufs_hba *hba,
 				lrbp->ucd_req_ptr->sc.exp_data_transfer_len);
 		}
 	}
-
-	if (lrbp->cmd && (lrbp->command_type == UTP_CMD_TYPE_SCSI)) {
+    /* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	if (lrbp->command_type == UTP_CMD_TYPE_SCSI) {
 		cmd_type = "scsi";
 		cmd_id = (u8)(*lrbp->cmd->cmnd);
+		req = lrbp->cmd->request;
 	} else if (lrbp->command_type == UTP_CMD_TYPE_DEV_MANAGE) {
 		if (hba->dev_cmd.type == DEV_CMD_TYPE_NOP) {
 			cmd_type = "nop";
@@ -687,16 +694,13 @@ static inline void ufshcd_cond_add_cmd_trace(struct ufs_hba *hba,
 			idn = hba->dev_cmd.query.request.upiu_req.idn;
 		}
 	}
+	__ufshcd_log_cmd(hba, (char *) str, cmd_type, tag, cmd_id, idn,
+			 lrbp->lun, lba, transfer_len, opcode, req);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+}
 
-	__ufshcd_cmd_log(hba, (char *) str, cmd_type, tag, cmd_id, idn,
-			 lrbp->lun, lba, transfer_len, opcode);
-}
-#else
-static inline void ufshcd_cond_add_cmd_trace(struct ufs_hba *hba,
-					unsigned int tag, const char *str)
-{
-}
-#endif
+/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
 static void ufshcd_print_clk_freqs(struct ufs_hba *hba)
 {
@@ -752,12 +756,42 @@ static inline void __ufshcd_print_host_regs(struct ufs_hba *hba, bool no_sleep)
 	dev_err(hba->dev, "hba->ufs_version = 0x%x, hba->capabilities = 0x%x",
 		hba->ufs_version, hba->capabilities);
 	dev_err(hba->dev,
-		"hba->outstanding_reqs = 0x%x, hba->outstanding_tasks = 0x%x",
-		(u32)hba->outstanding_reqs, (u32)hba->outstanding_tasks);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+		"hba->outstanding_reqs = 0x%x, hba->outstanding_tasks = 0x%x, lrb_in_use = 0x%x",
+		(u32)hba->outstanding_reqs, (u32)hba->outstanding_tasks,
+		(u32)hba->lrb_in_use);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	dev_err(hba->dev,
 		"last_hibern8_exit_tstamp at %lld us, hibern8_exit_cnt = %d",
 		ktime_to_us(hba->ufs_stats.last_hibern8_exit_tstamp),
 		hba->ufs_stats.hibern8_exit_cnt);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	dev_err(hba->dev,
+		"h8_enter_issue_time %lld us, h8_enter_cmpl_time = %lld us",
+		ktime_to_us(hba->h8_enter_issue_time),
+		ktime_to_us(hba->h8_enter_cmpl_time));
+	dev_err(hba->dev,
+		"h8_exit_issue_time %lld us, h8_exit_cmpl_time = %lld us",
+		ktime_to_us(hba->h8_exit_issue_time),
+		ktime_to_us(hba->h8_exit_cmpl_time));
+	dev_err(hba->dev,
+		"clk_gating_issue_time %lld us, clk_gating_cmpl_time = %lld us",
+		ktime_to_us(hba->clk_gating_issue_time),
+		ktime_to_us(hba->clk_gating_cmpl_time));
+	dev_err(hba->dev,
+		"clk_ungating_issue_time %lld us, clk_ungating_cmpl_time = %lld us",
+		ktime_to_us(hba->clk_ungating_issue_time),
+		ktime_to_us(hba->clk_ungating_cmpl_time));
+	dev_err(hba->dev,
+		"clk_scaling_issue_time %lld us, clk_scaling_cmpl_time = %lld us",
+		ktime_to_us(hba->clk_scaling_issue_time),
+		ktime_to_us(hba->clk_scaling_cmpl_time));
+	dev_err(hba->dev,
+		"gear_scale_start_time %lld us, gear_scale_cmpl_time = %lld us, cmd_between_gear_scale_and_hibern8_enter %d",
+		ktime_to_us(hba->gear_scale_start_time),
+		ktime_to_us(hba->gear_scale_cmpl_time),
+		hba->cmd_between_gear_scale_and_hibern8_enter);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
 	ufshcd_print_uic_err_hist(hba, &hba->ufs_stats.pa_err, "pa_err");
 	ufshcd_print_uic_err_hist(hba, &hba->ufs_stats.dl_err, "dl_err");
@@ -1390,8 +1424,15 @@ static void ufshcd_ungate_work(struct work_struct *work)
 	struct ufs_hba *hba = container_of(work, struct ufs_hba,
 			clk_gating.ungate_work);
 
-	ufshcd_cancel_gate_work(hba);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	struct task_struct *task = current;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
+	ufshcd_cancel_gate_work(hba);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	ufshcd_log_cmd(hba, "ufshcd_cancel_gate_work",
+		"ufshcd_ungate_work", 0, 0, task->pid);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	if (hba->clk_gating.state == CLKS_ON) {
 		spin_unlock_irqrestore(hba->host->host_lock, flags);
@@ -1418,6 +1459,9 @@ static void ufshcd_ungate_work(struct work_struct *work)
 	}
 unblock_reqs:
 	ufshcd_scsi_unblock_requests(hba);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	ufshcd_log_cmd(hba, "exit", "ufshcd_ungate_work", 0, 0, task->pid);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 }
 
 /**
@@ -1430,6 +1474,10 @@ int ufshcd_hold(struct ufs_hba *hba, bool async)
 {
 	int rc = 0;
 	unsigned long flags;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	int hr_state = 0;
+	struct task_struct *task = current;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
 	if (!ufshcd_is_clkgating_allowed(hba))
 		goto out;
@@ -1465,7 +1513,18 @@ start:
 		 * If the timer was active but the callback was not running
 		 * we have nothing to do, just change state and return.
 		 */
-		if (hrtimer_try_to_cancel(&hba->clk_gating.gate_hrtimer) == 1) {
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+		hr_state = hrtimer_try_to_cancel(&hba->clk_gating.gate_hrtimer);
+		if (hr_state == 0)
+			ufshcd_log_cmd(hba, "hrt_try_can = 0",
+				"ufshcd_hold", 0, 0, task->pid);
+		if (hr_state == -1)
+			ufshcd_log_cmd(hba, "hrt_try_can = -1",
+				"ufshcd_hold", 0, 0, task->pid);
+		if (hr_state == 1) {
+			ufshcd_log_cmd(hba, "hrtimer_try_can = 1",
+				"ufshcd_hold", 0, 0, task->pid);
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 			hba->clk_gating.state = CLKS_ON;
 			trace_ufshcd_clk_gating(dev_name(hba->dev),
 				hba->clk_gating.state);
@@ -1478,11 +1537,14 @@ start:
 		 */
 	case CLKS_OFF:
 		__ufshcd_scsi_block_requests(hba);
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+		ufshcd_log_cmd(hba, "clks-off", "ufshcd_hold", 0, 0, task->pid);
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 		hba->clk_gating.state = REQ_CLKS_ON;
 		trace_ufshcd_clk_gating(dev_name(hba->dev),
 			hba->clk_gating.state);
 		queue_work(hba->clk_gating.ungating_workq,
-				&hba->clk_gating.ungate_work);
+			&hba->clk_gating.ungate_work);
 		/*
 		 * fall through to check if we should wait for this
 		 * work to be done or not.
@@ -1491,6 +1553,10 @@ start:
 		if (async) {
 			rc = -EAGAIN;
 			hba->clk_gating.active_reqs--;
+			/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+			ufshcd_log_cmd(hba, "req-clks-on:async",
+				"ufshcd_hold", 0, 0, task->pid);
+			/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 			break;
 		}
 
@@ -1498,6 +1564,10 @@ start:
 		flush_work(&hba->clk_gating.ungate_work);
 		/* Make sure state is CLKS_ON before returning */
 		spin_lock_irqsave(hba->host->host_lock, flags);
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+		ufshcd_log_cmd(hba, "req-clks-on",
+			"ufshcd_hold", 0, 0, task->pid);
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 		goto start;
 	default:
 		dev_err(hba->dev, "%s: clk gating is in invalid state %d\n",
@@ -1516,8 +1586,15 @@ static void ufshcd_gate_work(struct work_struct *work)
 	struct ufs_hba *hba = container_of(work, struct ufs_hba,
 						clk_gating.gate_work);
 	unsigned long flags;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	struct task_struct *task = current;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
 	spin_lock_irqsave(hba->host->host_lock, flags);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	ufshcd_log_cmd(hba, "Enter", "ufshcd_gate_work", 0, 0,
+		       hba->clk_gating.state);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	/*
 	 * In case you are here to cancel this work the gating state
 	 * would be marked as REQ_CLKS_ON. In this case save time by
@@ -1525,7 +1602,9 @@ static void ufshcd_gate_work(struct work_struct *work)
 	 * state to CLKS_ON.
 	 */
 	if (hba->clk_gating.is_suspended ||
-		(hba->clk_gating.state != REQ_CLKS_OFF)) {
+        /* neiltsai, 20170406, for NOC error */
+        (hba->clk_gating.state != REQ_CLKS_OFF)) {
+        /* neiltsai, 20170406, for NOC error */
 		hba->clk_gating.state = CLKS_ON;
 		trace_ufshcd_clk_gating(dev_name(hba->dev),
 			hba->clk_gating.state);
@@ -1559,14 +1638,22 @@ static void ufshcd_gate_work(struct work_struct *work)
 		ufshcd_set_link_hibern8(hba);
 	}
 
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	if (hba->clk_gating.state == CLKS_ON)
+		dev_err(hba->dev, "May crash & burn !!\n");
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	/*
 	 * If auto hibern8 is supported then the link will already
 	 * be in hibern8 state and the ref clock can be gated.
 	 */
 	if ((ufshcd_is_auto_hibern8_supported(hba) ||
-	     !ufshcd_is_link_active(hba)) && !hba->no_ref_clk_gating)
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	    !ufshcd_is_link_active(hba))&&!hba->no_ref_clk_gating) {
+		ufshcd_log_cmd(hba, "ufshcd_disable_clocks",
+			"ufshcd_gate_work", 0, 0, task->pid);
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 		ufshcd_disable_clocks(hba, true);
-	else
+	} else
 		/* If link is active, device ref_clk can't be switched off */
 		ufshcd_disable_clocks_skip_ref_clk(hba, true);
 
@@ -1589,6 +1676,10 @@ static void ufshcd_gate_work(struct work_struct *work)
 			hba->clk_gating.state);
 	}
 rel_lock:
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	ufshcd_log_cmd(hba, "Exit", "ufshcd_gate_work", 0, 0,
+		       hba->clk_gating.state);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 out:
 	return;
@@ -1597,6 +1688,10 @@ out:
 /* host lock must be held before calling this variant */
 static void __ufshcd_release(struct ufs_hba *hba, bool no_sched)
 {
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	struct task_struct *task = current;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+
 	if (!ufshcd_is_clkgating_allowed(hba))
 		return;
 
@@ -1613,6 +1708,10 @@ static void __ufshcd_release(struct ufs_hba *hba, bool no_sched)
 	trace_ufshcd_clk_gating(dev_name(hba->dev), hba->clk_gating.state);
 	hba->ufs_stats.clk_rel.ts = ktime_get();
 
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	ufshcd_log_cmd(hba, "gate_hrtimer_start",
+		"__ufshcd_release", 0, 0, task->pid);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	hrtimer_start(&hba->clk_gating.gate_hrtimer,
 			ms_to_ktime(hba->clk_gating.delay_ms),
 			HRTIMER_MODE_REL);
@@ -1773,6 +1872,11 @@ static void ufshcd_init_clk_gating(struct ufs_hba *hba)
 
 	INIT_WORK(&gating->gate_work, ufshcd_gate_work);
 	INIT_WORK(&gating->ungate_work, ufshcd_ungate_work);
+
+	snprintf(wq_name, ARRAY_SIZE(wq_name), "ufs_clk_ungating_%d",
+		hba->host->host_no);
+	hba->clk_gating.ungating_workq = create_singlethread_workqueue(wq_name);
+
 	/*
 	 * Clock gating work must be executed only after auto hibern8
 	 * timeout has expired in the hardware or after aggressive
@@ -2058,10 +2162,16 @@ static void ufshcd_hibern8_exit_work(struct work_struct *work)
 
 	/* Exit from hibern8 */
 	if (ufshcd_is_link_hibern8(hba)) {
-		hba->ufs_stats.clk_hold.ctx = H8_EXIT_WORK;
+        /* neiltsai, 20170406, for NOC error */
+        hba->ufs_stats.chc.ts = ktime_get();
+        hba->ufs_stats.chc.hold_ctx = H8_EXIT;
+        /* neiltsai, 20170406, for NOC error */
 		ufshcd_hold(hba, false);
 		ret = ufshcd_uic_hibern8_exit(hba);
-		hba->ufs_stats.clk_rel.ctx = H8_EXIT_WORK;
+        /* neiltsai, 20170406, for NOC error */
+        hba->ufs_stats.crc.ts = ktime_get();
+        hba->ufs_stats.crc.rel_ctx = RH8_EXIT;
+        /* neiltsai, 20170406, for NOC error */
 		ufshcd_release(hba, false);
 		if (!ret) {
 			spin_lock_irqsave(hba->host->host_lock, flags);
@@ -2286,6 +2396,9 @@ int ufshcd_send_command(struct ufs_hba *hba, unsigned int task_tag)
 	ufshcd_writel(hba, 1 << task_tag, REG_UTP_TRANSFER_REQ_DOOR_BELL);
 	/* Make sure that doorbell is committed immediately */
 	wmb();
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->cmd_between_gear_scale_and_hibern8_enter = true;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	ufshcd_cond_add_cmd_trace(hba, task_tag, "send");
 	ufshcd_update_tag_stats(hba, task_tag);
 	return ret;
@@ -2403,7 +2516,11 @@ ufshcd_dispatch_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd)
 
 	hba->active_uic_cmd = uic_cmd;
 
-	ufshcd_dme_cmd_log(hba, "send", hba->active_uic_cmd->command);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	ufshcd_log_cmd(hba, "send", "dme", 0xff,
+			hba->active_uic_cmd->command, 0xff);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+
 	/* Write Args */
 	ufshcd_writel(hba, uic_cmd->argument1, REG_UIC_COMMAND_ARG_1);
 	ufshcd_writel(hba, uic_cmd->argument2, REG_UIC_COMMAND_ARG_2);
@@ -2437,7 +2554,10 @@ ufshcd_wait_for_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd)
 	if (ret)
 		ufsdbg_set_err_state(hba);
 
-	ufshcd_dme_cmd_log(hba, "cmp1", hba->active_uic_cmd->command);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	ufshcd_log_cmd(hba, "cmp1", "dme", 0xff,
+			hba->active_uic_cmd->command, 0xff);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	hba->active_uic_cmd = NULL;
@@ -2487,7 +2607,11 @@ ufshcd_send_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd)
 	int ret;
 	unsigned long flags;
 
-	hba->ufs_stats.clk_hold.ctx = UIC_CMD_SEND;
+    /* neiltsai, 20170406 for NOC error */
+    hba->ufs_stats.chc.ts = ktime_get();
+    hba->ufs_stats.chc.hold_ctx = HSEND_UIC_CMD;
+    /* neiltsai, 20170406 for NOC error */
+
 	ufshcd_hold_all(hba);
 	mutex_lock(&hba->uic_cmd_mutex);
 	ufshcd_add_delay_before_dme_cmd(hba);
@@ -2502,6 +2626,11 @@ ufshcd_send_uic_cmd(struct ufs_hba *hba, struct uic_command *uic_cmd)
 	mutex_unlock(&hba->uic_cmd_mutex);
 	ufshcd_release_all(hba);
 	hba->ufs_stats.clk_rel.ctx = UIC_CMD_SEND;
+
+    /* neiltsai, 20170406 for NOC error */
+    hba->ufs_stats.crc.ts = ktime_get();
+    hba->ufs_stats.crc.rel_ctx = RSEND_UIC_CMD;
+    /* neiltsai, 20170406 for NOC error */
 
 	ufsdbg_error_inject_dispatcher(hba,
 		ERR_INJECT_UIC, 0, &ret);
@@ -2993,7 +3122,10 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 	if (err) {
 		clear_bit_unlock(tag, &hba->lrb_in_use);
 		err = SCSI_MLQUEUE_HOST_BUSY;
-		hba->ufs_stats.clk_rel.ctx = QUEUE_CMD;
+        /* neiltsai, 20170406, for NOC error */
+        hba->ufs_stats.crc.ts = ktime_get();
+        hba->ufs_stats.crc.rel_ctx = Q_CMD;
+        /* neiltsai, 20170406, for NOC error */
 		ufshcd_release(hba, true);
 		goto out;
 	}
@@ -3016,7 +3148,12 @@ static int ufshcd_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmd)
 
 	lrbp = &hba->lrb[tag];
 
-	WARN_ON(lrbp->cmd);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	if (WARN_ON(lrbp->cmd)) {
+		pr_err("%s: hba 0x%p lrbp 0x%p\n", __func__, hba, lrbp);
+		ufshcd_cmd_log_print();
+	}
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	lrbp->cmd = cmd;
 	lrbp->sense_bufflen = UFSHCD_REQ_SENSE_SIZE;
 	lrbp->sense_buffer = cmd->sense_buffer;
@@ -3307,6 +3444,10 @@ static int ufshcd_exec_dev_cmd(struct ufs_hba *hba,
 
 	/* Make sure descriptors are ready before ringing the doorbell */
 	wmb();
+    /* neiltsai, 20170406, for NOC error */
+    hba->ufs_stats.last_devcmd_type = cmd_type;
+    hba->ufs_stats.last_devcmd_ts = ktime_get();
+    /* neiltsai, 20170406, for NOC error */
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	err = ufshcd_send_command(hba, tag);
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
@@ -3758,6 +3899,12 @@ int ufshcd_read_device_desc(struct ufs_hba *hba, u8 *buf, u32 size)
 	return ufshcd_read_desc(hba, QUERY_DESC_IDN_DEVICE, 0, buf, size);
 }
 
+/* liochen@BSP 2016/11/30, Add ufs info into *##*37847# */
+int ufshcd_read_geometry_desc(struct ufs_hba *hba, u8 *buf, u32 size)
+{
+       return ufshcd_read_desc(hba, QUERY_DESC_IDN_GEOMETRY, 0, buf, size);
+}
+
 /**
  * ufshcd_read_string_desc - read string descriptor
  * @hba: pointer to adapter instance
@@ -4025,10 +4172,16 @@ static int ufshcd_dme_link_startup(struct ufs_hba *hba)
 
 	uic_cmd.command = UIC_CMD_DME_LINK_STARTUP;
 
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->link_startup_issue_time = ktime_get();
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	ret = ufshcd_send_uic_cmd(hba, &uic_cmd);
 	if (ret)
 		dev_dbg(hba->dev,
 			"dme-link-startup: error code %d\n", ret);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->link_startup_cmpl_time = ktime_get();
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	return ret;
 }
 
@@ -4219,6 +4372,9 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 	u8 status;
 	int ret;
 	bool reenable_intr = false;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	u32 active_uic_command;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
 	mutex_lock(&hba->uic_cmd_mutex);
 	init_completion(&uic_async_done);
@@ -4236,8 +4392,15 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 		reenable_intr = true;
 	}
 	ret = __ufshcd_send_uic_cmd(hba, cmd, false);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	active_uic_command = hba->active_uic_cmd->command;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
 	if (ret) {
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+		if (cmd->command == UIC_CMD_DME_HIBER_ENTER)
+			hba->h8_enter_cmpl_time = ktime_get();
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 		dev_err(hba->dev,
 			"pwr ctrl cmd 0x%x with mode 0x%x uic error %d\n",
 			cmd->command, cmd->argument3, ret);
@@ -4246,6 +4409,10 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 
 	if (!wait_for_completion_timeout(hba->uic_async_done,
 					 msecs_to_jiffies(UIC_CMD_TIMEOUT))) {
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+		if (cmd->command == UIC_CMD_DME_HIBER_ENTER)
+			hba->h8_enter_cmpl_time = ktime_get();
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 		dev_err(hba->dev,
 			"pwr ctrl cmd 0x%x with mode 0x%x completion timeout\n",
 			cmd->command, cmd->argument3);
@@ -4260,8 +4427,11 @@ static int ufshcd_uic_pwr_ctrl(struct ufs_hba *hba, struct uic_command *cmd)
 			cmd->command, status);
 		ret = (status != PWR_OK) ? status : -1;
 	}
-	ufshcd_dme_cmd_log(hba, "cmp2", hba->active_uic_cmd->command);
-
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	ufshcd_log_cmd(hba, "cmp2", "dme", 0xff, active_uic_command, 0xff);
+	if (!ret && cmd->command == UIC_CMD_DME_HIBER_ENTER)
+		hba->h8_enter_cmpl_time = ktime_get();
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 out:
 	if (ret) {
 		ufsdbg_set_err_state(hba);
@@ -4365,10 +4535,20 @@ static int ufshcd_uic_change_pwr_mode(struct ufs_hba *hba, u8 mode)
 	uic_cmd.command = UIC_CMD_DME_SET;
 	uic_cmd.argument1 = UIC_ARG_MIB(PA_PWRMODE);
 	uic_cmd.argument3 = mode;
-	hba->ufs_stats.clk_hold.ctx = PWRCTL_CMD_SEND;
+    /* neiltsai, 20170406, for NOC error */
+    hba->ufs_stats.chc.ts = ktime_get();
+    hba->ufs_stats.chc.hold_ctx = HSEND_PWRCTL_CMD;
+    /* neiltsai, 20170406, for NOC error */
+
 	ufshcd_hold_all(hba);
 	ret = ufshcd_uic_pwr_ctrl(hba, &uic_cmd);
-	hba->ufs_stats.clk_rel.ctx = PWRCTL_CMD_SEND;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->gear_scale_cmpl_time = ktime_get();
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+    /* neiltsai, 20170406, for NOC error */
+    hba->ufs_stats.chc.ts = ktime_get();
+    hba->ufs_stats.chc.hold_ctx = RSEND_PWRCTL_CMD;
+    /* neiltsai, 20170406, for NOC error */
 	ufshcd_release_all(hba);
 out:
 	return ret;
@@ -4430,6 +4610,9 @@ static int __ufshcd_uic_hibern8_enter(struct ufs_hba *hba)
 	ktime_t start = ktime_get();
 
 	uic_cmd.command = UIC_CMD_DME_HIBER_ENTER;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->h8_enter_issue_time = start;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	ret = ufshcd_uic_pwr_ctrl(hba, &uic_cmd);
 	trace_ufshcd_profile_hibern8(dev_name(hba->dev), "enter",
 			     ktime_to_us(ktime_sub(ktime_get(), start)), ret);
@@ -4444,8 +4627,10 @@ static int __ufshcd_uic_hibern8_enter(struct ufs_hba *hba)
 
 		hba->full_init_linereset = false;
 		ufshcd_update_error_stats(hba, UFS_ERR_HIBERN8_ENTER);
-		dev_err(hba->dev, "%s: hibern8 enter failed. ret = %d",
-			__func__, ret);
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+		dev_err(hba->dev, "%s: hibern8 enter failed. ret = %d, issue time %lld",
+			__func__, ret, ktime_to_us(start));
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 		/*
 		 * If link recovery fails then return error code (-ENOLINK)
 		 * returned ufshcd_link_recovery().
@@ -4489,13 +4674,24 @@ int ufshcd_uic_hibern8_exit(struct ufs_hba *hba)
 	int ret;
 	ktime_t start = ktime_get();
 
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->h8_exit_issue_time = ktime_get();
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	uic_cmd.command = UIC_CMD_DME_HIBER_EXIT;
 	ret = ufshcd_uic_pwr_ctrl(hba, &uic_cmd);
 	trace_ufshcd_profile_hibern8(dev_name(hba->dev), "exit",
 			     ktime_to_us(ktime_sub(ktime_get(), start)), ret);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->h8_exit_cmpl_time = ktime_get();
 
-	/* Do full reinit if exit failed */
-	if (ret) {
+	/*
+	 * Do full reinit if exit failed or if LINERESET was detected during
+	 * Hibern8 operation. After LINERESET, link moves to default PWM-G1
+	 * mode hence full reinit is required to move link to HS speeds.
+	 */
+	if (ret || hba->full_init_linereset) {
+		hba->full_init_linereset = false;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 		ufshcd_update_error_stats(hba, UFS_ERR_HIBERN8_EXIT);
 		dev_err(hba->dev, "%s: hibern8 exit failed. ret = %d",
 			__func__, ret);
@@ -4613,6 +4809,10 @@ int ufshcd_change_power_mode(struct ufs_hba *hba,
 	if (ret)
 		return ret;
 
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->gear_scale_start_time = ktime_get();
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+
 	/*
 	 * Configure attributes for power mode change with below.
 	 * - PA_RXGEAR, PA_ACTIVERXDATALANES, PA_RXTERMINATION,
@@ -4660,6 +4860,10 @@ int ufshcd_change_power_mode(struct ufs_hba *hba,
 
 	ret = ufshcd_uic_change_pwr_mode(hba, pwr_mode->pwr_rx << 4
 			| pwr_mode->pwr_tx);
+
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->cmd_between_gear_scale_and_hibern8_enter = false;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
 	if (ret) {
 		ufshcd_update_error_stats(hba, UFS_ERR_POWER_MODE_CHANGE);
@@ -5573,7 +5777,9 @@ static void __ufshcd_transfer_req_compl(struct ufs_hba *hba,
 		} else if (lrbp->command_type == UTP_CMD_TYPE_DEV_MANAGE) {
 			if (hba->dev_cmd.complete) {
 				ufshcd_cond_add_cmd_trace(hba, index,
-						"dcmp");
+				/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+					"dcmp");
+				/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 				complete(hba->dev_cmd.complete);
 			}
 		}
@@ -6059,7 +6265,10 @@ static void ufshcd_err_handler(struct work_struct *work)
 	if (unlikely((hba->clk_gating.state != CLKS_ON) &&
 	    ufshcd_is_auto_hibern8_supported(hba))) {
 		spin_unlock_irqrestore(hba->host->host_lock, flags);
-		hba->ufs_stats.clk_hold.ctx = ERR_HNDLR_WORK;
+        /* neiltsai, 20170406, for NOC error */
+        hba->ufs_stats.chc.ts = ktime_get();
+        hba->ufs_stats.chc.hold_ctx = ERR_HNDL;
+        /* neiltsai, 20170406, for NOC error */
 		ufshcd_hold(hba, false);
 		spin_lock_irqsave(hba->host->host_lock, flags);
 		clks_enabled = true;
@@ -6099,6 +6308,11 @@ static void ufshcd_err_handler(struct work_struct *work)
 			ufshcd_cmd_log_print(hba);
 			spin_lock_irqsave(hba->host->host_lock, flags);
 		}
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+		spin_unlock_irqrestore(hba->host->host_lock, flags);
+		ufshcd_cmd_log_print();
+		spin_lock_irqsave(hba->host->host_lock, flags);
+		/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	}
 
 	if ((hba->saved_err & INT_FATAL_ERRORS)
@@ -6203,10 +6417,16 @@ skip_err_handling:
 
 	hba->silence_err_logs = false;
 
-	if (clks_enabled) {
+    /* neiltsai, 20170406, for NOC error */
+    if (clks_enabled) {
+    /* neiltsai, 20170406, for NOC error */
 		__ufshcd_release(hba, false);
-		hba->ufs_stats.clk_rel.ctx = ERR_HNDLR_WORK;
-	}
+    /* neiltsai, 20170406, for NOC error */
+        hba->ufs_stats.crc.ts = ktime_get();
+        hba->ufs_stats.crc.rel_ctx = ERR_HNDLR;
+    }
+    /* neiltsai, 20170406, for NOC error */
+
 out:
 	ufshcd_clear_eh_in_progress(hba);
 	spin_unlock_irqrestore(hba->host->host_lock, flags);
@@ -6442,8 +6662,11 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 
 	spin_lock(hba->host->host_lock);
 	intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
-	hba->ufs_stats.last_intr_status = intr_status;
-	hba->ufs_stats.last_intr_ts = ktime_get();
+
+    /* neiltsai, 20170406, for NOC error */
+    hba->ufs_stats.last_intr_status = intr_status;
+    hba->ufs_stats.last_intr_ts = ktime_get();
+    /* neiltsai, 20170406, for NOC error */
 	/*
 	 * There could be max of hba->nutrs reqs in flight and in worst case
 	 * if the reqs get finished 1 by 1 after the interrupt status is
@@ -6459,6 +6682,14 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 			retval |= ufshcd_sl_intr(hba, enabled_intr_status);
 
 		intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
+
+        /* neiltsai, 20170406, for NOC error */
+        if (intr_status == 0x80004000) {
+                dev_err(hba->dev, "Reserved INT(0x%08x) set!!\n",
+                        intr_status);
+                break;
+        }
+        /* neiltsai, 20170406, for NOC error */
 	} while (intr_status && --retries);
 
 	if (retval == IRQ_NONE) {
@@ -6522,8 +6753,11 @@ static int ufshcd_issue_tm_cmd(struct ufs_hba *hba, int lun_id, int task_id,
 	 * the maximum wait time is bounded by %TM_CMD_TIMEOUT.
 	 */
 	wait_event(hba->tm_tag_wq, ufshcd_get_tm_free_slot(hba, &free_slot));
-	hba->ufs_stats.clk_hold.ctx = TM_CMD_SEND;
-	ufshcd_hold_all(hba);
+    /* neiltsai, 20170406, for NOC error */
+    hba->ufs_stats.chc.ts = ktime_get();
+    hba->ufs_stats.chc.hold_ctx = HSEND_TM_CMD;
+    /* neiltsai, 20170406, for NOC error */
+    ufshcd_hold_all(hba);
 
 	spin_lock_irqsave(host->host_lock, flags);
 	task_req_descp = hba->utmrdl_base_addr;
@@ -6580,8 +6814,10 @@ static int ufshcd_issue_tm_cmd(struct ufs_hba *hba, int lun_id, int task_id,
 	clear_bit(free_slot, &hba->tm_condition);
 	ufshcd_put_tm_slot(hba, free_slot);
 	wake_up(&hba->tm_tag_wq);
-	hba->ufs_stats.clk_rel.ctx = TM_CMD_SEND;
-
+    /* neiltsai, 20170406, for NOC error */
+    hba->ufs_stats.crc.ts = ktime_get();
+    hba->ufs_stats.crc.rel_ctx = RSEND_TM_CMD;
+    /* neiltsai, 20170406, for NOC error */
 	ufshcd_release_all(hba);
 	return err;
 }
@@ -6608,7 +6844,10 @@ static int ufshcd_eh_device_reset_handler(struct scsi_cmnd *cmd)
 	hba = shost_priv(host);
 	tag = cmd->request->tag;
 
-	ufshcd_cmd_log_print(hba);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	ufshcd_cmd_log_print();
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+
 	lrbp = &hba->lrb[tag];
 	err = ufshcd_issue_tm_cmd(hba, lrbp->lun, 0, UFS_LOGICAL_RESET, &resp);
 	if (err || resp != UPIU_TASK_MANAGEMENT_FUNC_COMPL) {
@@ -6616,6 +6855,10 @@ static int ufshcd_eh_device_reset_handler(struct scsi_cmnd *cmd)
 			err = resp;
 		goto out;
 	}
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	pr_err("%s: UFS_LOGICAL_RESET lun %d err %d\n",
+		__func__, lrbp->lun, err);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
 	/* clear the commands that were pending for corresponding LUN */
 	for_each_set_bit(pos, &hba->outstanding_reqs, hba->nutrs) {
@@ -6843,6 +7086,9 @@ static int ufshcd_host_reset_and_restore(struct ufs_hba *hba)
 	int err;
 	unsigned long flags;
 
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	dev_err(hba->dev, "%s: enter\n", __func__);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	/* Reset the host controller */
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	ufshcd_hba_stop(hba, false);
@@ -6877,6 +7123,9 @@ out:
 	if (err)
 		dev_err(hba->dev, "%s: Host init failed %d\n", __func__, err);
 
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	dev_err(hba->dev, "%s: exit\n", __func__);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	return err;
 }
 
@@ -7390,6 +7639,9 @@ static int ufshcd_probe_hba(struct ufs_hba *hba)
 	int ret;
 	ktime_t start = ktime_get();
 
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->cmd_between_gear_scale_and_hibern8_enter = true;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	ret = ufshcd_link_startup(hba);
 	if (ret)
 		goto out;
@@ -7480,6 +7732,10 @@ static int ufshcd_probe_hba(struct ufs_hba *hba)
 			}
 			hba->clk_scaling.is_allowed = true;
 		}
+
+
+		/* liochen@BSP, 2016/11/30, Add ufs info into *##*37847# */
+		ufs_fill_info(hba);
 
 		scsi_scan_host(hba->host);
 		pm_runtime_put_sync(hba->dev);
@@ -8111,6 +8367,16 @@ static int ufshcd_setup_clocks(struct ufs_hba *hba, bool on,
 				continue;
 
 			clk_state_changed = on ^ clki->enabled;
+			/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+			if (clk_state_changed) {
+				if (!on)
+					hba->clk_gating_issue_time =
+								ktime_get();
+				else
+					hba->clk_ungating_issue_time =
+								ktime_get();
+			}
+			/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 			if (on && !clki->enabled) {
 				ret = clk_prepare_enable(clki->clk);
 				if (ret) {
@@ -8164,10 +8430,18 @@ out:
 		ufshcd_vops_update_sec_cfg(hba, true);
 	}
 
-	if (clk_state_changed)
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	if (clk_state_changed) {
+		if (!on)
+			hba->clk_gating_cmpl_time = ktime_get();
+		else
+			hba->clk_ungating_cmpl_time = ktime_get();
+
 		trace_ufshcd_profile_clk_gating(dev_name(hba->dev),
 			(on ? "on" : "off"),
 			ktime_to_us(ktime_sub(ktime_get(), start)), ret);
+	}
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	return ret;
 }
 
@@ -9539,7 +9813,9 @@ scale_up_gear:
 clk_scaling_unprepare:
 	ufshcd_clock_scaling_unprepare(hba);
 out:
-	hba->ufs_stats.clk_rel.ctx = CLK_SCALE_WORK;
+    /* neiltsai, 20170406, for NOC error */
+    hba->ufs_stats.last_scaling_freq_update = ktime_get();
+    /* neiltsai, 20170406, for NOC error */
 	ufshcd_release_all(hba);
 	return ret;
 }
@@ -9707,7 +9983,13 @@ static int ufshcd_devfreq_target(struct device *dev,
 	spin_unlock_irqrestore(hba->host->host_lock, irq_flags);
 
 	start = ktime_get();
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->clk_scaling_issue_time = start;
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	ret = ufshcd_devfreq_scale(hba, scale_up);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	hba->clk_scaling_cmpl_time = ktime_get();
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 	trace_ufshcd_profile_clk_scaling(dev_name(hba->dev),
 		(scale_up ? "up" : "down"),
 		ktime_to_us(ktime_sub(ktime_get(), start)), ret);
@@ -9971,7 +10253,9 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	 */
 	ufshcd_set_ufs_dev_active(hba);
 
-	ufshcd_cmd_log_init(hba);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	ufshcd_log_cmd_init(hba);
+	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
 
 	async_schedule(ufshcd_async_scan, hba);
 
