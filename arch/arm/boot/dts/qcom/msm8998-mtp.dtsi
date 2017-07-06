@@ -11,9 +11,8 @@
  */
 
 #include <dt-bindings/interrupt-controller/irq.h>
-#include "msm8998-pinctrl.dtsi"
 #include "msm8998-camera-sensor-mtp.dtsi"
-/ {
+&vendor {
 	bluetooth: bt_wcn3990 {
 		compatible = "qca,wcn3990";
 		qca,bt-vdd-io-supply = <&pm8998_s3>;
@@ -290,6 +289,19 @@
 
 &pmi8998_wled {
 	qcom,led-strings-list = [00 01];
+};
+
+&red_led {
+	/delete-property/ linux,default-trigger;
+	qcom,start-idx = <0>;
+	qcom,idx-len = <10>;
+	qcom,duty-pcts = [00 19 32 4b 64
+			64 4b 32 19 00];
+	qcom,use-blink;
+};
+
+&green_led {
+	/delete-property/ linux,default-trigger;
 };
 
 &dsi_dual_nt35597_video {
@@ -573,7 +585,7 @@
 	};
 };
 
-/{
+&vendor {
 	mtp_batterydata: qcom,battery-data {
 		qcom,batt-id-range-pct = <15>;
 		#include "OP-batterydata-3300mah.dtsi"

@@ -535,9 +535,9 @@
 			"NO_SET_RATE", "NO_SET_RATE",
 			"NO_SET_RATE", "NO_SET_RATE",
 			"INIT_RATE",
-			"INIT_RATE", "NO_SET_RATE",
+			"NO_SET_RATE", "NO_SET_RATE",
 			"INIT_RATE",
-			"INIT_RATE", "NO_SET_RATE";
+			"NO_SET_RATE", "NO_SET_RATE";
 		status = "ok";
 	};
 

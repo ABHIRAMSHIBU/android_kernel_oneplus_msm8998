@@ -34,7 +34,7 @@ static inline void __user *to_user_ptr(u64 address)
 }
 
 static struct msm_gem_submit *submit_create(struct drm_device *dev,
-		struct msm_gpu *gpu, int nr)
+		struct msm_gem_address_space *aspace, int nr)
 {
 	struct msm_gem_submit *submit;
 	int sz = sizeof(*submit) + (nr * sizeof(submit->bos[0]));
@@ -42,11 +42,14 @@ static struct msm_gem_submit *submit_create(struct drm_device *dev,
 	submit = kmalloc(sz, GFP_TEMPORARY | __GFP_NOWARN | __GFP_NORETRY);
 	if (submit) {
 		submit->dev = dev;
-		submit->gpu = gpu;
+		submit->aspace = aspace;
 
 		/* initially, until copy_from_user() and bo lookup succeeds: */
 		submit->nr_bos = 0;
 		submit->nr_cmds = 0;
+
+		submit->profile_buf_vaddr = NULL;
+		submit->profile_buf_iova = 0;
 
 		INIT_LIST_HEAD(&submit->bo_list);
 		ww_acquire_init(&submit->ticket, &reservation_ww_class);
@@ -90,7 +93,8 @@ static int submit_lookup_objects(struct msm_gem_submit *submit,
 			pagefault_disable();
 		}
 
-		if (submit_bo.flags & ~MSM_SUBMIT_BO_FLAGS) {
+		if ((submit_bo.flags & ~MSM_SUBMIT_BO_FLAGS) ||
+			!(submit_bo.flags & MSM_SUBMIT_BO_FLAGS)) {
 			DRM_ERROR("invalid flags: %x\n", submit_bo.flags);
 			ret = -EINVAL;
 			goto out_unlock;
@@ -141,7 +145,7 @@ static void submit_unlock_unpin_bo(struct msm_gem_submit *submit, int i)
 	struct msm_gem_object *msm_obj = submit->bos[i].obj;
 
 	if (submit->bos[i].flags & BO_PINNED)
-		msm_gem_put_iova(&msm_obj->base, submit->gpu->id);
+		msm_gem_put_iova(&msm_obj->base, submit->aspace);
 
 	if (submit->bos[i].flags & BO_LOCKED)
 		ww_mutex_unlock(&msm_obj->resv->lock);
@@ -162,7 +166,7 @@ retry:
 
 	for (i = 0; i < submit->nr_bos; i++) {
 		struct msm_gem_object *msm_obj = submit->bos[i].obj;
-		uint32_t iova;
+		uint64_t iova;
 
 		if (slow_locked == i)
 			slow_locked = -1;
@@ -180,7 +184,7 @@ retry:
 
 		/* if locking succeeded, pin bo: */
 		ret = msm_gem_get_iova_locked(&msm_obj->base,
-				submit->gpu->id, &iova);
+				submit->aspace, &iova);
 
 		/* this would break the logic in the fail path.. there is no
 		 * reason for this to happen, but just to be on the safe side
@@ -229,7 +233,7 @@ fail:
 }
 
 static int submit_bo(struct msm_gem_submit *submit, uint32_t idx,
-		struct msm_gem_object **obj, uint32_t *iova, bool *valid)
+		struct msm_gem_object **obj, uint64_t *iova, bool *valid)
 {
 	if (idx >= submit->nr_bos) {
 		DRM_ERROR("invalid buffer index: %u (out of %u)\n",
@@ -275,7 +279,8 @@ static int submit_reloc(struct msm_gem_submit *submit, struct msm_gem_object *ob
 		struct drm_msm_gem_submit_reloc submit_reloc;
 		void __user *userptr =
 			to_user_ptr(relocs + (i * sizeof(submit_reloc)));
-		uint32_t iova, off;
+		uint64_t iova;
+		uint32_t off;
 		bool valid;
 
 		ret = copy_from_user(&submit_reloc, userptr, sizeof(submit_reloc));
@@ -347,17 +352,19 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 	/* for now, we just have 3d pipe.. eventually this would need to
 	 * be more clever to dispatch to appropriate gpu module:
 	 */
-	if (args->pipe != MSM_PIPE_3D0)
+	if (MSM_PIPE_ID(args->flags) != MSM_PIPE_3D0)
 		return -EINVAL;
 
 	gpu = priv->gpu;
+	if (!gpu)
+		return -ENXIO;
 
 	if (args->nr_cmds > MAX_CMDS)
 		return -EINVAL;
 
 	mutex_lock(&dev->struct_mutex);
 
-	submit = submit_create(dev, gpu, args->nr_bos);
+	submit = submit_create(dev, ctx->aspace, args->nr_bos);
 	if (!submit) {
 		ret = -ENOMEM;
 		goto out;
@@ -376,7 +383,8 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 		void __user *userptr =
 			to_user_ptr(args->cmds + (i * sizeof(submit_cmd)));
 		struct msm_gem_object *msm_obj;
-		uint32_t iova;
+		uint64_t iova;
+		size_t size;
 
 		ret = copy_from_user(&submit_cmd, userptr, sizeof(submit_cmd));
 		if (ret) {
@@ -389,6 +397,7 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 		case MSM_SUBMIT_CMD_BUF:
 		case MSM_SUBMIT_CMD_IB_TARGET_BUF:
 		case MSM_SUBMIT_CMD_CTX_RESTORE_BUF:
+		case MSM_SUBMIT_CMD_PROFILE_BUF:
 			break;
 		default:
 			DRM_ERROR("invalid type: %08x\n", submit_cmd.type);
@@ -408,9 +417,12 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 			goto out;
 		}
 
-		if ((submit_cmd.size + submit_cmd.submit_offset) >=
-				msm_obj->base.size) {
-			DRM_ERROR("invalid cmdstream size: %u\n", submit_cmd.size);
+		size = submit_cmd.size + submit_cmd.submit_offset;
+
+		if (!submit_cmd.size || (size < submit_cmd.size) ||
+			(size > msm_obj->base.size)) {
+			DRM_ERROR("invalid cmdstream offset/size: %u/%u\n",
+				submit_cmd.submit_offset, submit_cmd.size);
 			ret = -EINVAL;
 			goto out;
 		}
@@ -419,6 +431,12 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 		submit->cmd[i].size = submit_cmd.size / 4;
 		submit->cmd[i].iova = iova + submit_cmd.submit_offset;
 		submit->cmd[i].idx  = submit_cmd.submit_idx;
+
+		if (submit_cmd.type == MSM_SUBMIT_CMD_PROFILE_BUF) {
+			submit->profile_buf_iova = submit->cmd[i].iova;
+			submit->profile_buf_vaddr =
+				msm_gem_vaddr_locked(&msm_obj->base);
+		}
 
 		if (submit->valid)
 			continue;
@@ -431,7 +449,12 @@ int msm_ioctl_gem_submit(struct drm_device *dev, void *data,
 
 	submit->nr_cmds = i;
 
-	ret = msm_gpu_submit(gpu, submit, ctx);
+	/* Clamp the user submitted ring to the range of available rings */
+	submit->ring = clamp_t(uint32_t,
+		(args->flags & MSM_SUBMIT_RING_MASK) >> MSM_SUBMIT_RING_SHIFT,
+		0, gpu->nr_rings - 1);
+
+	ret = msm_gpu_submit(gpu, submit);
 
 	args->fence = submit->fence;
 

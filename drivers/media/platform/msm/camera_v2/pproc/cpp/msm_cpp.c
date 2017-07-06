@@ -2542,9 +2542,29 @@ static int msm_cpp_cfg_frame(struct cpp_device *cpp_dev,
 		return -EINVAL;
 	}
 
-	if (stripe_base == UINT_MAX || new_frame->num_strips >
-		(UINT_MAX - 1 - stripe_base) / stripe_size) {
-		pr_err("Invalid frame message,num_strips %d is large\n",
+	/* Stripe index starts at zero */
+	if ((!new_frame->num_strips) ||
+		(new_frame->first_stripe_index >= new_frame->num_strips) ||
+		(new_frame->last_stripe_index  >= new_frame->num_strips) ||
+		(new_frame->first_stripe_index >
+			new_frame->last_stripe_index)) {
+		pr_err("Invalid frame message, #stripes=%d, stripe indices=[%d,%d]\n",
+			new_frame->num_strips,
+			new_frame->first_stripe_index,
+			new_frame->last_stripe_index);
+		return -EINVAL;
+	}
+
+	if (!stripe_size) {
+		pr_err("Invalid frame message, invalid stripe_size (%d)!\n",
+			stripe_size);
+		return -EINVAL;
+	}
+
+	if ((stripe_base == UINT_MAX) ||
+		(new_frame->num_strips >
+			(UINT_MAX - 1 - stripe_base) / stripe_size)) {
+		pr_err("Invalid frame message, num_strips %d is large\n",
 			new_frame->num_strips);
 		return -EINVAL;
 	}
@@ -2785,13 +2805,14 @@ static int msm_cpp_cfg(struct cpp_device *cpp_dev,
 	struct msm_cpp_frame_info_t *frame = NULL;
 	struct msm_cpp_frame_info_t k_frame_info;
 	int32_t rc = 0;
-	int32_t i = 0;
-	int32_t num_buff = sizeof(k_frame_info.output_buffer_info)/
+	uint32_t i = 0;
+	uint32_t num_buff = sizeof(k_frame_info.output_buffer_info) /
 				sizeof(struct msm_cpp_buffer_info_t);
+
 	if (copy_from_user(&k_frame_info,
 			(void __user *)ioctl_ptr->ioctl_ptr,
 			sizeof(k_frame_info)))
-			return -EFAULT;
+		return -EFAULT;
 
 	frame = msm_cpp_get_frame(ioctl_ptr);
 	if (!frame) {
@@ -2953,11 +2974,9 @@ static int msm_cpp_validate_input(unsigned int cmd, void *arg,
 		}
 
 		*ioctl_ptr = arg;
-		/* neiltsai, 20170411, for CR#2025367 iommu fix */
 		if (((*ioctl_ptr) == NULL) ||
 			((*ioctl_ptr)->ioctl_ptr == NULL) ||
 			((*ioctl_ptr)->len == 0)) {
-		/* neiltsai, 20170411, for CR#2025367 iommu fix */
 			pr_err("Error invalid ioctl argument cmd %u", cmd);
 			return -EINVAL;
 		}
@@ -3510,22 +3529,17 @@ STREAM_BUFF_END:
 		if (cpp_dev->iommu_state == CPP_IOMMU_STATE_DETACHED) {
 			struct msm_camera_smmu_attach_type cpp_attach_info;
 
-			/* neiltsai, 20170411, for CR#2025367 iommu fix */
 			if (ioctl_ptr->len !=
 				sizeof(struct msm_camera_smmu_attach_type)) {
 				rc = -EINVAL;
 				break;
 			}
-			/* neiltsai, 20170411, for CR#2025367 iommu fix */
 			memset(&cpp_attach_info, 0, sizeof(cpp_attach_info));
 			rc = msm_cpp_copy_from_ioctl_ptr(&cpp_attach_info,
 				ioctl_ptr);
 			if (rc < 0) {
 				pr_err("CPP_IOMMU_ATTACH copy from user fail");
-				/* neiltsai, 20170411, for CR#2025367 iommu fix */
-				rc = -EINVAL;
 				break;
-				/* neiltsai, 20170411, for CR#2025367 iommu fix */
 			}
 
 			cpp_dev->security_mode = cpp_attach_info.attach;
@@ -3556,25 +3570,20 @@ STREAM_BUFF_END:
 	case VIDIOC_MSM_CPP_IOMMU_DETACH: {
 		if ((cpp_dev->iommu_state == CPP_IOMMU_STATE_ATTACHED) &&
 			(cpp_dev->stream_cnt == 0)) {
-
 			struct msm_camera_smmu_attach_type cpp_attach_info;
 
-			/* neiltsai, 20170411, for CR#2025367 iommu fix */
 			if (ioctl_ptr->len !=
 				sizeof(struct msm_camera_smmu_attach_type)) {
 				rc = -EINVAL;
 				break;
 			}
-			/* neiltsai, 20170411, for CR#2025367 iommu fix */
+
 			memset(&cpp_attach_info, 0, sizeof(cpp_attach_info));
 			rc = msm_cpp_copy_from_ioctl_ptr(&cpp_attach_info,
 				ioctl_ptr);
 			if (rc < 0) {
 				pr_err("CPP_IOMMU_DETTACH copy from user fail");
-				/* neiltsai, 20170411, for CR#2025367 iommu fix */
-				rc = -EINVAL;
 				break;
-				/* neiltsai, 20170411, for CR#2025367 iommu fix */
 			}
 
 			cpp_dev->security_mode = cpp_attach_info.attach;
@@ -3598,9 +3607,7 @@ STREAM_BUFF_END:
 		} else {
 			pr_err("%s:%d IOMMMU attach triggered in invalid state\n",
 				__func__, __LINE__);
-			/* neiltsai, 20170411, for CR#2025367 iommu fix */
 			rc = -EINVAL;
-			/* neiltsai, 20170411, for CR#2025367 iommu fix */
 		}
 		break;
 	}
@@ -3921,9 +3928,7 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 	struct msm_cpp_stream_buff_info_t k_cpp_buff_info;
 	struct msm_cpp_frame_info32_t k32_frame_info;
 	struct msm_cpp_frame_info_t k64_frame_info;
-    /*neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
-    struct msm_camera_smmu_attach_type kb_cpp_smmu_attach_info;
-    /*neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
+	struct msm_camera_smmu_attach_type kb_cpp_smmu_attach_info;
 	uint32_t identity_k = 0;
 	bool is_copytouser_req = true;
 	void __user *up = (void __user *)arg;
@@ -4228,26 +4233,23 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 		break;
 	}
 	case VIDIOC_MSM_CPP_IOMMU_ATTACH32:
-        /* neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
-        /* neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
 	case VIDIOC_MSM_CPP_IOMMU_DETACH32:
-        /* neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
-        {
-            if ((kp_ioctl.len != sizeof(struct msm_camera_smmu_attach_type))
-                    || (copy_from_user(&kb_cpp_smmu_attach_info,
-                            (void __user *)kp_ioctl.ioctl_ptr,
-                            sizeof(kb_cpp_smmu_attach_info)))) {
-                    mutex_unlock(&cpp_dev->mutex);
-                    return -EINVAL;
-            }
-            kp_ioctl.ioctl_ptr = (void *)&kb_cpp_smmu_attach_info;
-            is_copytouser_req = false;
-            cmd = (cmd == VIDIOC_MSM_CPP_IOMMU_ATTACH32) ?
-                          VIDIOC_MSM_CPP_IOMMU_ATTACH :
-                          VIDIOC_MSM_CPP_IOMMU_DETACH;
-        }
-        /* neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
+	{
+		if ((kp_ioctl.len != sizeof(struct msm_camera_smmu_attach_type))
+			|| (copy_from_user(&kb_cpp_smmu_attach_info,
+				(void __user *)kp_ioctl.ioctl_ptr,
+				sizeof(kb_cpp_smmu_attach_info)))) {
+			mutex_unlock(&cpp_dev->mutex);
+			return -EINVAL;
+		}
+
+		kp_ioctl.ioctl_ptr = (void *)&kb_cpp_smmu_attach_info;
+		is_copytouser_req = false;
+		cmd = (cmd == VIDIOC_MSM_CPP_IOMMU_ATTACH32) ?
+			VIDIOC_MSM_CPP_IOMMU_ATTACH :
+			VIDIOC_MSM_CPP_IOMMU_DETACH;
 		break;
+	}
 	case MSM_SD_NOTIFY_FREEZE:
 		break;
 	case MSM_SD_UNNOTIFY_FREEZE:
@@ -4256,12 +4258,10 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 		cmd = MSM_SD_SHUTDOWN;
 		break;
 	default:
-        /* neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
-        pr_err_ratelimited("%s: unsupported compat type :%x\n",
-                __func__, cmd);
-        mutex_unlock(&cpp_dev->mutex);
-        return -EINVAL;
-        /* neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
+		pr_err_ratelimited("%s: unsupported compat type :%x LOAD %lu\n",
+				__func__, cmd, VIDIOC_MSM_CPP_LOAD_FIRMWARE);
+		mutex_unlock(&cpp_dev->mutex);
+		return -EINVAL;
 	}
 
 	mutex_unlock(&cpp_dev->mutex);
@@ -4290,11 +4290,9 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
 	case MSM_SD_UNNOTIFY_FREEZE:
 		break;
 	default:
-        /* neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
-        pr_err_ratelimited("%s: unsupported compat type :%x\n",
-                __func__, cmd);
-        return -EINVAL;
-        /* neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
+		pr_err_ratelimited("%s: unsupported compat type :%d\n",
+				__func__, cmd);
+		return -EINVAL;
 	}
 
 	if (is_copytouser_req) {

@@ -1768,14 +1768,22 @@ static int f2fs_ioc_set_encryption_policy(struct file *filp, unsigned long arg)
 {
 	struct fscrypt_policy policy;
 	struct inode *inode = file_inode(filp);
+	int err;
 
 	if (copy_from_user(&policy, (struct fscrypt_policy __user *)arg,
 							sizeof(policy)))
 		return -EFAULT;
 
-	f2fs_update_time(F2FS_I_SB(inode), REQ_TIME);
+	mutex_lock(&inode->i_mutex);
 
-	return fscrypt_process_policy(filp, &policy);
+	err = f2fs_process_policy(&policy, inode);
+
+	mutex_unlock(&inode->i_mutex);
+
+	return err;
+#else
+	return -EOPNOTSUPP;
+#endif
 }
 
 static int f2fs_ioc_get_encryption_policy(struct file *filp, unsigned long arg)

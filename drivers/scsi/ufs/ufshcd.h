@@ -3,7 +3,7 @@
  *
  * This code is based on drivers/scsi/ufs/ufshcd.h
  * Copyright (C) 2011-2013 Samsung India Software Operations
- * Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * Authors:
  *	Santosh Yaraganavi <santosh.sy@samsung.com>
@@ -519,7 +519,7 @@ struct ufs_init_prefetch {
 	u32 icc_level;
 };
 
-#define UIC_ERR_REG_HIST_LENGTH 8
+#define UIC_ERR_REG_HIST_LENGTH 20
 /**
  * struct ufs_uic_err_reg_hist - keeps history of uic errors
  * @pos: index to indicate cyclic buffer position
@@ -588,38 +588,21 @@ struct ufshcd_req_stat {
 };
 #endif
 
-/* neiltsai, 20170406, for NOC error */
-enum h_ctx {
-    QUEUE_CMD = 10,
-    ERR_HNDL,
-    H8_EXIT,
-    SCALE_SYSFS,
-    HSEND_UIC_CMD,
-    HSEND_PWRCTL_CMD,
-    HSEND_TM_CMD,
+enum ufshcd_ctx {
+	QUEUE_CMD,
+	ERR_HNDLR_WORK,
+	H8_EXIT_WORK,
+	UIC_CMD_SEND,
+	PWRCTL_CMD_SEND,
+	TM_CMD_SEND,
+	XFR_REQ_COMPL,
+	CLK_SCALE_WORK,
 };
 
-enum r_ctx {
-    Q_CMD = 100,
-    REL_CTX,
-    RH8_EXIT,
-    XFR_REQ_COMP,
-    ERR_HNDLR,
-    RSEND_UIC_CMD,
-    RSEND_PWRCTL_CMD,
-    RSEND_TM_CMD,
+struct ufshcd_clk_ctx {
+	ktime_t ts;
+	enum ufshcd_ctx ctx;
 };
-
-struct clk_hold_ctx {
-    ktime_t ts;
-    enum h_ctx hold_ctx;
-};
-
-struct clk_rel_ctx {
-    ktime_t ts;
-    enum r_ctx rel_ctx;
-};
-/* neiltsai, 20170406, for NOC error */
 
 /**
  * struct ufs_stats - keeps usage/err statistics
@@ -649,15 +632,10 @@ struct ufs_stats {
 	int query_stats_arr[UPIU_QUERY_OPCODE_MAX][MAX_QUERY_IDN];
 
 #endif
-/* neiltsai, 20170406, for NOC error */
-    u32 last_devcmd_type;
-    ktime_t last_devcmd_ts;
-    u32 last_intr_status;
-    ktime_t last_intr_ts;
-    ktime_t last_scaling_freq_update;
-    struct clk_hold_ctx chc;
-    struct clk_rel_ctx crc;
-/* neiltsai, 20170406, for NOC error */
+	u32 last_intr_status;
+	ktime_t last_intr_ts;
+	struct ufshcd_clk_ctx clk_hold;
+	struct ufshcd_clk_ctx clk_rel;
 	u32 hibern8_exit_cnt;
 	ktime_t last_hibern8_exit_tstamp;
 	struct ufs_uic_err_reg_hist pa_err;
@@ -682,6 +660,27 @@ struct ufs_stats {
 		 UFSHCD_DBG_PRINT_HOST_REGS_EN | UFSHCD_DBG_PRINT_TRS_EN | \
 		 UFSHCD_DBG_PRINT_TMRS_EN | UFSHCD_DBG_PRINT_PWR_EN |	   \
 		 UFSHCD_DBG_PRINT_HOST_STATE_EN)
+
+struct ufshcd_cmd_log_entry {
+	char *str;	/* context like "send", "complete" */
+	char *cmd_type;	/* "scsi", "query", "nop", "dme" */
+	u8 lun;
+	u8 cmd_id;
+	sector_t lba;
+	int transfer_len;
+	u8 idn;		/* used only for query idn */
+	u32 doorbell;
+	u32 outstanding_reqs;
+	u32 seq_num;
+	unsigned int tag;
+	ktime_t tstamp;
+};
+
+struct ufshcd_cmd_log {
+	struct ufshcd_cmd_log_entry *entries;
+	int pos;
+	u32 seq_num;
+};
 
 /**
  * struct ufs_hba - per adapter private structure
@@ -898,23 +897,7 @@ struct ufs_hba {
 
 	struct ufs_clk_gating clk_gating;
 	struct ufs_hibern8_on_idle hibern8_on_idle;
-	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
-	ktime_t h8_enter_issue_time;
-	ktime_t h8_enter_cmpl_time;
-	ktime_t h8_exit_issue_time;
-	ktime_t h8_exit_cmpl_time;
-	ktime_t clk_gating_issue_time;
-	ktime_t clk_gating_cmpl_time;
-	ktime_t clk_ungating_issue_time;
-	ktime_t clk_ungating_cmpl_time;
-	ktime_t clk_scaling_issue_time;
-	ktime_t clk_scaling_cmpl_time;
-	ktime_t gear_scale_start_time;
-	ktime_t gear_scale_cmpl_time;
-	ktime_t link_startup_issue_time;
-	ktime_t link_startup_cmpl_time;
-	bool cmd_between_gear_scale_and_hibern8_enter;
-	/* neiltsai, 20170329, for AHB_TIMEOUT debug */
+	struct ufshcd_cmd_log cmd_log;
 
 	/* Control to enable/disable host capabilities */
 	u32 caps;
@@ -1173,9 +1156,6 @@ out:
 }
 
 int ufshcd_read_device_desc(struct ufs_hba *hba, u8 *buf, u32 size);
-
-//qiuchangping@BSP 2015-11-17 add for ufs info display
-int ufshcd_read_geometry_desc(struct ufs_hba *hba, u8 *buf, u32 size);
 
 static inline bool ufshcd_is_hs_mode(struct ufs_pa_layer_attr *pwr_info)
 {

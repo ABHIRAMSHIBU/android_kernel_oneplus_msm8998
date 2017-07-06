@@ -10,9 +10,8 @@
  * GNU General Public License for more details.
  */
 
-#include "msm8998-pinctrl.dtsi"
 #include "msm8998-camera-sensor-cdp.dtsi"
-/ {
+&vendor {
 	bluetooth: bt_wcn3990 {
 		compatible = "qca,wcn3990";
 		qca,bt-vdd-io-supply = <&pm8998_s3>;
@@ -513,6 +512,10 @@
 };
 
 &snd_9335 {
+	qcom,mbhc-audio-jack-type = "6-pole-jack";
+};
+
+&snd_934x {
 	qcom,mbhc-audio-jack-type = "6-pole-jack";
 };
 

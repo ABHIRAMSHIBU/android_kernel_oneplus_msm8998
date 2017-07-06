@@ -798,11 +798,13 @@ int wcd934x_bringup(struct wcd9xxx *wcd9xxx)
 	regmap_write(wcd_regmap, WCD934X_CODEC_RPM_RST_CTL, 0x01);
 	regmap_write(wcd_regmap, WCD934X_SIDO_NEW_VOUT_A_STARTUP, 0x19);
 	regmap_write(wcd_regmap, WCD934X_SIDO_NEW_VOUT_D_STARTUP, 0x15);
+	/* Add 1msec delay for VOUT to settle */
+	usleep_range(1000, 1100);
 	regmap_write(wcd_regmap, WCD934X_CODEC_RPM_PWR_CDC_DIG_HM_CTL, 0x5);
 	regmap_write(wcd_regmap, WCD934X_CODEC_RPM_PWR_CDC_DIG_HM_CTL, 0x7);
-	regmap_write(wcd_regmap, WCD934X_CODEC_RPM_PWR_CDC_DIG_HM_CTL, 0x3);
 	regmap_write(wcd_regmap, WCD934X_CODEC_RPM_RST_CTL, 0x3);
 	regmap_write(wcd_regmap, WCD934X_CODEC_RPM_RST_CTL, 0x7);
+	regmap_write(wcd_regmap, WCD934X_CODEC_RPM_PWR_CDC_DIG_HM_CTL, 0x3);
 
 	return 0;
 }
@@ -5474,7 +5476,7 @@ static int tavil_mad_input_put(struct snd_kcontrol *kcontrol,
 	u32 adc, i, mic_bias_found = 0;
 	int ret = 0;
 	char *mad_input;
-	bool is_adc2_input = false;
+	bool is_adc_input = false;
 
 	tavil_mad_input = ucontrol->value.integer.value[0];
 
@@ -5522,8 +5524,7 @@ static int tavil_mad_input_put(struct snd_kcontrol *kcontrol,
 		snprintf(mad_amic_input_widget, 6, "%s%u", "AMIC", adc);
 
 		mad_input_widget = mad_amic_input_widget;
-		if (adc == 2)
-			is_adc2_input = true;
+		is_adc_input = true;
 	} else {
 		/* DMIC type input widget*/
 		mad_input_widget = tavil_conn_mad_text[tavil_mad_input];
@@ -5531,7 +5532,7 @@ static int tavil_mad_input_put(struct snd_kcontrol *kcontrol,
 
 	dev_dbg(codec->dev,
 		"%s: tavil input widget = %s, adc_input = %s\n", __func__,
-		mad_input_widget, is_adc2_input ? "true" : "false");
+		mad_input_widget, is_adc_input ? "true" : "false");
 
 	for (i = 0; i < card->num_of_dapm_routes; i++) {
 		if (!strcmp(card->of_dapm_routes[i].sink, mad_input_widget)) {
@@ -5576,8 +5577,8 @@ static int tavil_mad_input_put(struct snd_kcontrol *kcontrol,
 			    0x0F, tavil_mad_input);
 	snd_soc_update_bits(codec, WCD934X_ANA_MAD_SETUP,
 			    0x07, mic_bias_found);
-	/* for adc2 input, mad should be in micbias mode with BG enabled */
-	if (is_adc2_input)
+	/* for all adc inputs, mad should be in micbias mode with BG enabled */
+	if (is_adc_input)
 		snd_soc_update_bits(codec, WCD934X_ANA_MAD_SETUP,
 				    0x88, 0x88);
 	else
@@ -8277,6 +8278,9 @@ static int __tavil_cdc_mclk_enable(struct tavil_priv *tavil,
 
 	WCD9XXX_V2_BG_CLK_LOCK(tavil->resmgr);
 	ret = __tavil_cdc_mclk_enable_locked(tavil, enable);
+	if (enable)
+		wcd_resmgr_set_sido_input_src(tavil->resmgr,
+						     SIDO_SOURCE_RCO_BG);
 	WCD9XXX_V2_BG_CLK_UNLOCK(tavil->resmgr);
 
 	return ret;
@@ -8415,6 +8419,8 @@ static int __tavil_codec_internal_rco_ctrl(struct snd_soc_codec *codec,
 					__func__, ret);
 				goto done;
 			}
+			wcd_resmgr_set_sido_input_src(tavil->resmgr,
+							SIDO_SOURCE_RCO_BG);
 			ret = wcd_resmgr_enable_clk_block(tavil->resmgr,
 							   WCD_CLK_RCO);
 			ret |= tavil_cdc_req_mclk_enable(tavil, false);
@@ -8574,6 +8580,7 @@ static const struct tavil_reg_mask_val tavil_codec_reg_init_common_val[] = {
 	{WCD934X_TLMM_DMIC3_CLK_PINCFG, 0xFF, 0x0a},
 	{WCD934X_TLMM_DMIC3_DATA_PINCFG, 0xFF, 0x0a},
 	{WCD934X_CPE_SS_SVA_CFG, 0x60, 0x00},
+	{WCD934X_CPE_SS_CPAR_CFG, 0x10, 0x10},
 };
 
 static void tavil_codec_init_reg(struct tavil_priv *priv)
@@ -9069,8 +9076,9 @@ static int tavil_device_down(struct wcd9xxx *wcd9xxx)
 
 	codec = (struct snd_soc_codec *)(wcd9xxx->ssr_priv);
 	priv = snd_soc_codec_get_drvdata(codec);
-	swrm_wcd_notify(priv->swr.ctrl_data[0].swr_pdev,
-			SWR_DEVICE_DOWN, NULL);
+	if (priv->swr.ctrl_data)
+		swrm_wcd_notify(priv->swr.ctrl_data[0].swr_pdev,
+				SWR_DEVICE_DOWN, NULL);
 	tavil_dsd_reset(priv->dsd_config);
 	snd_soc_card_change_online_state(codec->component.card, 0);
 	for (count = 0; count < NUM_CODEC_DAIS; count++)
@@ -9816,18 +9824,23 @@ static int __tavil_enable_efuse_sensing(struct tavil_priv *tavil)
 {
 	int val, rc;
 
-	__tavil_cdc_mclk_enable(tavil, true);
+	WCD9XXX_V2_BG_CLK_LOCK(tavil->resmgr);
+	__tavil_cdc_mclk_enable_locked(tavil, true);
 
 	regmap_update_bits(tavil->wcd9xxx->regmap,
 			WCD934X_CHIP_TIER_CTRL_EFUSE_CTL, 0x1E, 0x10);
 	regmap_update_bits(tavil->wcd9xxx->regmap,
 			WCD934X_CHIP_TIER_CTRL_EFUSE_CTL, 0x01, 0x01);
-
 	/*
 	 * 5ms sleep required after enabling efuse control
 	 * before checking the status.
 	 */
 	usleep_range(5000, 5500);
+	wcd_resmgr_set_sido_input_src(tavil->resmgr,
+					     SIDO_SOURCE_RCO_BG);
+
+	WCD9XXX_V2_BG_CLK_UNLOCK(tavil->resmgr);
+
 	rc = regmap_read(tavil->wcd9xxx->regmap,
 			 WCD934X_CHIP_TIER_CTRL_EFUSE_STATUS, &val);
 	if (rc || (!(val & 0x01)))

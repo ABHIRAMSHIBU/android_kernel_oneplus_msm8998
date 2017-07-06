@@ -337,7 +337,7 @@ int ipa3_send_one(struct ipa3_sys_context *sys, struct ipa3_desc *desc,
 	int result;
 	u16 sps_flags = SPS_IOVEC_FLAG_EOT;
 	dma_addr_t dma_address;
-	u16 len;
+	u16 len = 0;
 	u32 mem_flag = GFP_ATOMIC;
 
 	if (unlikely(!in_atomic))
@@ -1515,6 +1515,7 @@ int ipa3_teardown_sys_pipe(u32 clnt_hdl)
 	struct ipa3_ep_context *ep;
 	int empty;
 	int result;
+	int i;
 
 	if (clnt_hdl >= ipa3_ctx->ipa_num_pipes ||
 	    ipa3_ctx->ep[clnt_hdl].valid == 0) {
@@ -1551,13 +1552,23 @@ int ipa3_teardown_sys_pipe(u32 clnt_hdl)
 		cancel_delayed_work_sync(&ep->sys->replenish_rx_work);
 	flush_workqueue(ep->sys->wq);
 	if (ipa3_ctx->transport_prototype == IPA_TRANSPORT_TYPE_GSI) {
-		result = ipa3_stop_gsi_channel(clnt_hdl);
+		/* channel stop might fail on timeout if IPA is busy */
+		for (i = 0; i < IPA_GSI_CHANNEL_STOP_MAX_RETRY; i++) {
+			result = ipa3_stop_gsi_channel(clnt_hdl);
+			if (result == GSI_STATUS_SUCCESS)
+				break;
+
+			if (result != -GSI_STATUS_AGAIN &&
+			    result != -GSI_STATUS_TIMED_OUT)
+				break;
+		}
+
 		if (result != GSI_STATUS_SUCCESS) {
 			IPAERR("GSI stop chan err: %d.\n", result);
 			BUG();
 			return result;
 		}
-		result = gsi_reset_channel(ep->gsi_chan_hdl);
+		result = ipa3_reset_gsi_channel(clnt_hdl);
 		if (result != GSI_STATUS_SUCCESS) {
 			IPAERR("Failed to reset chan: %d.\n", result);
 			BUG();
