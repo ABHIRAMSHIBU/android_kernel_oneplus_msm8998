@@ -242,9 +242,11 @@ static struct smb_params pm660_params = {
 
 #define STEP_CHARGING_MAX_STEPS	5
 struct smb_dt_props {
+	int	fcc_ua;
 	int	usb_icl_ua;
 	int	dc_icl_ua;
 	int	boost_threshold_ua;
+	int	fv_uv;
 	int	wipower_max_uw;
 	int	min_freq_khz;
 	int	max_freq_khz;

@@ -4268,7 +4268,6 @@ static long msm_cpp_subdev_fops_compat_ioctl(struct file *file,
         }
         /* neiltsai, 20170406, for Fix iommu_attach/detach compat_ioctl issue */
 		break;
-	}
 	case MSM_SD_NOTIFY_FREEZE:
 		break;
 	case MSM_SD_UNNOTIFY_FREEZE:

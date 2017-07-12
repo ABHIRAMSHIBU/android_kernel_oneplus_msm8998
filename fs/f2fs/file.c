@@ -1768,7 +1768,6 @@ static int f2fs_ioc_set_encryption_policy(struct file *filp, unsigned long arg)
 {
 	struct fscrypt_policy policy;
 	struct inode *inode = file_inode(filp);
-	int err;
 
 	if (copy_from_user(&policy, (struct fscrypt_policy __user *)arg,
 							sizeof(policy)))

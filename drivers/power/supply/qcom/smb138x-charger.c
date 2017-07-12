@@ -96,6 +96,7 @@ struct smb_dt_props {
 	int	dc_icl_ua;
 	int	chg_temp_max_mdegc;
 	int	connector_temp_max_mdegc;
+	int	pl_mode;
 };
 
 struct smb138x {

@@ -1083,22 +1083,6 @@ int smblib_get_icl_current(struct smb_charger *chg, int *icl_ua)
 	return 0;
 }
 
-/*********************
- * VOTABLE CALLBACKS *
- *********************/
-
-static int smblib_dc_suspend_vote_callback(struct votable *votable, void *data,
-			int suspend, const char *client)
-{
-	struct smb_charger *chg = data;
-
-	/* resume input if suspend is invalid */
-	if (suspend < 0)
-		suspend = 0;
-
-	return smblib_set_dc_suspend(chg, (bool)suspend);
-}
-
 static int smblib_dc_icl_vote_callback(struct votable *votable, void *data,
 			int icl_ua, const char *client)
 {
@@ -6612,31 +6596,25 @@ static void rdstd_cc2_detach_work(struct work_struct *work)
 
 	usleep_range(30000, 31000);
 
-	rc = smblib_read(chg, TYPE_C_STATUS_4_REG, &stat4);
+	rc = smblib_read(chg, TYPE_C_STATUS_4_REG, &stat);
 	if (rc < 0) {
-		smblib_err(chg, "Couldn't read TYPE_C_STATUS_4 rc=%d\n", rc);
+		smblib_err(chg, "Couldn't read TYPE_C_STATUS_4 rc=%d\n",
+			rc);
 		return;
 	}
+	if (stat & TYPEC_DEBOUNCE_DONE_STATUS_BIT)
+		goto rerun;
 
-	rc = smblib_read(chg, TYPE_C_STATUS_5_REG, &stat5);
+	rc = smblib_read(chg, TYPE_C_STATUS_5_REG, &stat);
 	if (rc < 0) {
 		smblib_err(chg,
 			"Couldn't read TYPE_C_STATUS_5_REG rc=%d\n", rc);
 		return;
 	}
-
-	if ((stat4 & TYPEC_DEBOUNCE_DONE_STATUS_BIT)
-			|| (stat5 & TIMER_STAGE_2_BIT)) {
-		smblib_dbg(chg, PR_MISC, "rerunning DD=%d TS2BIT=%d\n",
-				(int)(stat4 & TYPEC_DEBOUNCE_DONE_STATUS_BIT),
-				(int)(stat5 & TIMER_STAGE_2_BIT));
+	if (stat & TIMER_STAGE_2_BIT)
 		goto rerun;
-	}
 
-	smblib_dbg(chg, PR_MISC, "Bingo CC2 Removal detected\n");
-	chg->cc2_detach_wa_active = false;
-	rc = smblib_masked_write(chg, TYPE_C_INTRPT_ENB_SOFTWARE_CTRL_REG,
-						EXIT_SNK_BASED_ON_CC_BIT, 0);
+	/* Bingo, cc2 removal detected */
 	smblib_reg_block_restore(chg, cc2_detach_settings);
 	mutex_lock(&chg->lock);
 	smblib_usb_typec_change(chg);
@@ -6647,6 +6625,7 @@ static void rdstd_cc2_detach_work(struct work_struct *work)
 rerun:
 	schedule_work(&chg->rdstd_cc2_detach_work);
 }
+
 static void smblib_legacy_detection_work(struct work_struct *work)
 {
 	struct smb_charger *chg = container_of(work, struct smb_charger,
@@ -6678,66 +6657,6 @@ static void smblib_legacy_detection_work(struct work_struct *work)
 	chg->typec_legacy_valid = true;
 	smblib_usb_typec_change(chg);
 	vote(chg->typec_irq_disable_votable, LEGACY_UNKNOWN_VOTER, false, 0);
-	mutex_unlock(&chg->lock);
-}
-
-static void smblib_pl_enable_work(struct work_struct *work)
-{
-	struct smb_charger *chg = container_of(work, struct smb_charger,
-							pl_enable_work.work);
-
-	smblib_dbg(chg, PR_PARALLEL, "timer expired, enabling parallel\n");
-	vote(chg->pl_disable_votable, PL_DELAY_VOTER, false, 0);
-	vote(chg->awake_votable, PL_DELAY_VOTER, false, 0);
-}
-
-static void smblib_legacy_detection_work(struct work_struct *work)
-{
-	struct smb_charger *chg = container_of(work, struct smb_charger,
-							legacy_detection_work);
-	int rc;
-	u8 stat;
-	bool legacy, rp_high;
-
-	mutex_lock(&chg->lock);
-	chg->typec_en_dis_active = 1;
-	smblib_dbg(chg, PR_MISC, "running legacy unknown workaround\n");
-	rc = smblib_masked_write(chg,
-				TYPE_C_INTRPT_ENB_SOFTWARE_CTRL_REG,
-				TYPEC_DISABLE_CMD_BIT,
-				TYPEC_DISABLE_CMD_BIT);
-	if (rc < 0)
-		smblib_err(chg, "Couldn't disable type-c rc=%d\n", rc);
-
-	/* wait for the adapter to turn off VBUS */
-	msleep(500);
-
-	rc = smblib_masked_write(chg,
-				TYPE_C_INTRPT_ENB_SOFTWARE_CTRL_REG,
-				TYPEC_DISABLE_CMD_BIT, 0);
-	if (rc < 0)
-		smblib_err(chg, "Couldn't enable type-c rc=%d\n", rc);
-
-	/* wait for type-c detection to complete */
-	msleep(100);
-
-	rc = smblib_read(chg, TYPE_C_STATUS_5_REG, &stat);
-	if (rc < 0) {
-		smblib_err(chg, "Couldn't read typec stat5 rc = %d\n", rc);
-		goto unlock;
-	}
-
-	chg->typec_legacy_valid = true;
-	vote(chg->usb_icl_votable, LEGACY_UNKNOWN_VOTER, false, 0);
-	legacy = stat & TYPEC_LEGACY_CABLE_STATUS_BIT;
-	rp_high = smblib_get_prop_ufp_mode(chg) ==
-						POWER_SUPPLY_TYPEC_SOURCE_HIGH;
-	if (!legacy || !rp_high)
-		vote(chg->hvdcp_disable_votable_indirect, VBUS_CC_SHORT_VOTER,
-								false, 0);
-
-unlock:
-	chg->typec_en_dis_active = 0;
 	mutex_unlock(&chg->lock);
 }
 

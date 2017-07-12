@@ -458,7 +458,6 @@ static int pl_fv_vote_callback(struct votable *votable, void *data,
 	struct pl_data *chip = data;
 	union power_supply_propval pval = {0, };
 	int rc = 0;
-	int effective_fv_uv = fv_uv;
 	pr_info("%s,fv_uv=%d\n",__func__,fv_uv);
 
 	if (fv_uv < 0)

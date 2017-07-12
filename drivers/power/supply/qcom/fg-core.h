@@ -405,6 +405,7 @@ struct fg_chip {
 	bool			esr_fcc_ctrl_en;
 	bool			soc_reporting_ready;
 	bool			esr_flt_cold_temp_en;
+	bool			bsoc_delta_irq_en;
 	bool			slope_limit_en;
 	bool			use_ima_single_mode;
 	struct completion	soc_update;

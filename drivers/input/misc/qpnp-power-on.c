@@ -788,9 +788,9 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	if (!cfg->key_code)
 		return 0;
 
-	if (pon->kpd_dbc_enable && cfg->pon_type == PON_KPDPWR) {
-		elapsed_us = ktime_us_delta(ktime_get(), pon->kpd_release_time);
-		if (elapsed_us < pon->dbc) {
+	if (pon->kpdpwr_dbc_enable && cfg->pon_type == PON_KPDPWR) {
+		elapsed_us = ktime_us_delta(ktime_get(), pon->kpdpwr_last_release_time);
+		if (elapsed_us < pon->dbc_time_us) {
 		pr_err("Ignoring kpd event - within debounce time\n");
 		return 0;
 		}
@@ -833,9 +833,9 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 	pr_debug("PMIC input: code=%d, sts=0x%hhx\n",
 					cfg->key_code, pon_rt_sts);
 	key_status = pon_rt_sts & pon_rt_bit;
-	if (pon->kpd_dbc_enable && cfg->pon_type == PON_KPDPWR) {
+	if (pon->kpdpwr_dbc_enable && cfg->pon_type == PON_KPDPWR) {
 		if (!key_status)
-		pon->kpd_release_time = ktime_get();
+		pon->kpdpwr_last_release_time = ktime_get();
 	}
 	//#endif /* VENDOR_EDIT */
 
@@ -2589,9 +2589,9 @@ static int qpnp_pon_probe(struct platform_device *pdev)
 			"Unable to get PON debounce delay rc=%d\n", rc);
 		return rc;
 	}
-	qpnp_pon_get_dbc(pon, &pon->dbc);
+	qpnp_pon_get_dbc(pon, &pon->dbc_time_us);
 
-	pon->kpd_dbc_enable = of_property_read_bool(pon->pdev->dev.of_node,
+	pon->kpdpwr_dbc_enable = of_property_read_bool(pon->pdev->dev.of_node,
 	"qcom,kpd-dbc-enable");
 	//#endif /* VENDOR_EDIT */
 
