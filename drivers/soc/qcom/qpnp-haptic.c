@@ -382,9 +382,20 @@ struct qpnp_hap {
 	u8				act_type;
 	u8				wave_shape;
 	u8				wave_samp[QPNP_HAP_WAV_SAMP_LEN];
+<<<<<<< HEAD
 	u8				shadow_wave_samp[QPNP_HAP_WAV_SAMP_LEN];
 	u8				brake_pat[QPNP_HAP_BRAKE_PAT_LEN];
 	u8				sc_count;
+=======
+	u8				wave_samp_overdrive[QPNP_HAP_WAV_SAMP_LEN];
+	u8				wave_samp_normal[QPNP_HAP_WAV_SAMP_LEN];
+	u8				shadow_wave_samp[QPNP_HAP_WAV_SAMP_LEN];
+	u8				brake_pat[QPNP_HAP_BRAKE_PAT_LEN];
+	u8				reg_en_ctl;
+	u8				reg_play;
+	u8				lra_res_cal_period;
+	u8				sc_duration;
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
 	u8				ext_pwm_dtest_line;
 	u8				pmic_subtype;
 	u8				clk_trim_error_code;
@@ -398,10 +409,16 @@ struct qpnp_hap {
 	bool				en_brake;
 	bool				sup_brake_pat;
 	bool				correct_lra_drive_freq;
+<<<<<<< HEAD
 	bool				perform_lra_auto_resonance_search;
 	bool				auto_mode;
 	bool				override_auto_mode_config;
 	bool				play_irq_en;
+=======
+	bool				misc_trim_error_rc19p2_clk_reg_present;
+	int					resonant_frequency;
+	int					enable_time;
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
 };
 
 static struct qpnp_hap *ghap;
@@ -1250,6 +1267,111 @@ static ssize_t qpnp_hap_wf_s7_store(struct device *dev,
 static ssize_t qpnp_hap_wf_update_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
+<<<<<<< HEAD
+=======
+	u8 lra_auto_res_lo = 0, lra_auto_res_hi = 0;
+	int temp;
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+
+<<<<<<< HEAD
+	return snprintf(buf, PAGE_SIZE, "%d\n", hap->wf_update);
+=======
+	qpnp_hap_read_reg(hap, &lra_auto_res_lo,
+				QPNP_HAP_RATE_CFG1_REG(hap->base));
+	qpnp_hap_read_reg(hap, &lra_auto_res_hi,
+				QPNP_HAP_RATE_CFG2_REG(hap->base));
+
+	temp = (lra_auto_res_hi << 8) | (lra_auto_res_lo & 0xff);
+
+	hap->resonant_frequency = ((19200/96)*1000)/temp;
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", hap->resonant_frequency);
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
+}
+
+/* sysfs store for updating wave samples */
+static ssize_t qpnp_hap_wf_update_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+
+	mutex_lock(&hap->wf_lock);
+	hap->wf_update = true;
+	mutex_unlock(&hap->wf_lock);
+
+	return count;
+}
+
+<<<<<<< HEAD
+/* sysfs show for wave repeat */
+static ssize_t qpnp_hap_wf_rep_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+=======
+static ssize_t qpnp_hap_vmax_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	u8 reg = 0;
+	int rc;
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", hap->wave_rep_cnt);
+}
+
+<<<<<<< HEAD
+/* sysfs store for wave repeat */
+static ssize_t qpnp_hap_wf_rep_store(struct device *dev,
+=======
+static ssize_t qpnp_hap_vmax_store(struct device *dev,
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
+	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
+					 timed_dev);
+<<<<<<< HEAD
+	int data, rc;
+	u8 val;
+=======
+
+	if (sscanf(buf, "%d", &data) != 1)
+		return -EINVAL;
+
+	if (data < QPNP_HAP_VMAX_MIN_MV)
+		data = QPNP_HAP_VMAX_MIN_MV;
+	else if (data > QPNP_HAP_VMAX_MAX_MV)
+		data = QPNP_HAP_VMAX_MAX_MV;
+
+	rc = qpnp_hap_read_reg(hap, &reg, QPNP_HAP_VMAX_REG(hap->base));
+	if (rc < 0)
+		return rc;
+
+	reg &= QPNP_HAP_VMAX_MASK;
+	temp = data / QPNP_HAP_VMAX_MIN_MV;
+	reg |= (temp << QPNP_HAP_VMAX_SHIFT);
+
+	rc = qpnp_hap_write_reg(hap, &reg, QPNP_HAP_VMAX_REG(hap->base));
+
+	if (rc)
+		return rc;
+
+	hap->vmax_mv = data;
+
+	return count;
+}
+
+/* sysfs show for wave form update */
+static ssize_t qpnp_hap_wf_update_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
 	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
 	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
 					 timed_dev);
@@ -1290,8 +1412,9 @@ static ssize_t qpnp_hap_wf_rep_store(struct device *dev,
 	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
 	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
 					 timed_dev);
-	int data, rc;
-	u8 val;
+	int data, rc, temp;
+	u8 reg;
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
 
 	rc = kstrtoint(buf, 10, &data);
 	if (rc)
@@ -1843,10 +1966,15 @@ static int calculate_lra_code(struct qpnp_hap *hap)
 		return rc;
 	}
 
+<<<<<<< HEAD
 	if (!lra_drive_period_code_lo && !lra_drive_period_code_hi) {
 		pr_err("Unexpected Error: both RATE_CFG1 and RATE_CFG2 read 0\n");
 		return -EINVAL;
 	}
+=======
+	lra_init_freq = 200000 / play_rate_code;
+	range = (abs(lra_init_freq - 235) * 100) / 235;
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
 
 	lra_drive_period_code =
 	 (lra_drive_period_code_hi << 8) | (lra_drive_period_code_lo & 0xff);
@@ -1955,6 +2083,7 @@ static void update_lra_frequency(struct qpnp_hap *hap)
 	play_rate_code =
 		 (lra_auto_res[1] & 0xF0) << 4 | (lra_auto_res[0] & 0xFF);
 
+<<<<<<< HEAD
 	pr_debug("lra_auto_res_lo = 0x%x lra_auto_res_hi = 0x%x play_rate_code = 0x%x\n",
 		lra_auto_res[0], lra_auto_res[1], play_rate_code);
 
@@ -1983,6 +2112,21 @@ static void update_lra_frequency(struct qpnp_hap *hap)
 		if (rc < 0)
 			pr_debug("Auto-resonance write failed\n");
 		return;
+=======
+	lra_auto_res_hi = lra_auto_res_hi >> 4;
+	temp |= lra_auto_res_hi;
+	temp = temp << 8;
+	temp |= lra_auto_res_lo;
+
+	lra_init_freq = 200000 / temp;
+
+	if ((abs(lra_init_freq - 235) * 100 / 235) < 5) {
+		lra_auto_res_lo = lra_auto_res_lo;
+		lra_auto_res_hi = lra_auto_res_hi;
+	} else {
+		lra_auto_res_lo = 0x53;
+		lra_auto_res_hi = 0x3;
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
 	}
 
 	lra_auto_res[1] >>= 4;
@@ -2023,11 +2167,17 @@ static bool is_sw_lra_auto_resonance_control(struct qpnp_hap *hap)
 	if (hap->act_type != QPNP_HAP_LRA)
 		return false;
 
+<<<<<<< HEAD
 	if (hap->lra_hw_auto_resonance)
 		return false;
 
 	if (!hap->correct_lra_drive_freq)
 		return false;
+=======
+	lra_code_lo = lra_play_rate_code[index] & QPNP_HAP_RATE_CFG1_MASK;
+	qpnp_hap_write_reg(hap, &lra_code_lo,
+				QPNP_HAP_RATE_CFG1_REG(hap->base));
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
 
 	if (hap->auto_mode && hap->play_mode == QPNP_HAP_BUFFER)
 		return false;
@@ -2341,7 +2491,17 @@ static void qpnp_hap_worker(struct work_struct *work)
 	struct qpnp_hap *hap = container_of(work, struct qpnp_hap,
 					 work);
 	u8 val = 0x00;
+<<<<<<< HEAD
 	int rc;
+=======
+	int rc, reg_en = 0;
+
+	if (hap->state) {
+		hrtimer_start(&hap->hap_timer,
+			ktime_set(hap->enable_time / 1000,
+			(hap->enable_time % 1000) * 1000000), HRTIMER_MODE_REL);
+	}
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
 
 	if (hap->vcc_pon && hap->state && !hap->vcc_pon_enabled) {
 		rc = regulator_enable(hap->vcc_pon);
@@ -2535,10 +2695,28 @@ static int qpnp_hap_config(struct qpnp_hap *hap)
 			LRA_DRIVE_PERIOD_POS_ERR(hap, rc_clk_err_percent_x10);
 	}
 
+<<<<<<< HEAD
 	pr_debug("Play rate code 0x%x\n", hap->init_drive_period_code);
 
 	val = hap->init_drive_period_code & QPNP_HAP_RATE_CFG1_MASK;
 	rc = qpnp_hap_write_reg(hap, QPNP_HAP_RATE_CFG1_REG(hap->base), val);
+=======
+	reg = temp & QPNP_HAP_RATE_CFG1_MASK;
+	rc = qpnp_hap_write_reg(hap, &reg,
+			QPNP_HAP_RATE_CFG1_REG(hap->base));
+	if (rc)
+		return rc;
+
+	rc = qpnp_hap_read_reg(hap, &reg,
+			QPNP_HAP_RATE_CFG2_REG(hap->base));
+	if (rc < 0)
+		return rc;
+	reg &= QPNP_HAP_RATE_CFG2_MASK;
+	temp = temp >> QPNP_HAP_RATE_CFG2_SHFT;
+	reg |= temp;
+	rc = qpnp_hap_write_reg(hap, &reg,
+			QPNP_HAP_RATE_CFG2_REG(hap->base));
+>>>>>>> ef904b8... qpnp-haptic: format before doing any changes
 	if (rc)
 		return rc;
 
