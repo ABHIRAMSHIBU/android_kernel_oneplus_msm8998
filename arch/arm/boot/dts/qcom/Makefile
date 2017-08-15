@@ -137,7 +137,9 @@ msm8998-v2.1-mtp-overlay.dtbo-base :=  msm8998-v2.1.dtb
 msm8998-qrd-overlay.dtbo-base :=  msm8998-qrd.dtb
 msm8998-qrd-vr1-overlay.dtbo-base :=  msm8998-qrd-vr1.dtb
 msm8998-qrd-skuk-overlay.dtbo-base :=  msm8998-qrd-skuk.dtb
-else
+endif
+# Disable to reduze kernel size
+ifeq (true,false)
 dtb-$(CONFIG_ARCH_MSM8998) += msm8998-sim.dtb \
 	msm8998-rumi.dtb \
 	msm8998-cdp.dtb \
@@ -171,11 +173,21 @@ dtb-$(CONFIG_ARCH_MSM8998) += msm8998-sim.dtb \
 	apq8098-v2.1-svr20.dtb \
 	msm8998-v2.1-interposer-sdm660-cdp.dtb \
 	msm8998-v2.1-interposer-sdm660-mtp.dtb \
-	msm8998-v2.1-interposer-sdm660-qrd.dtb \
-	msm8998-9x55-rcm.dtb \
-	msm8998-9x55-cdp.dtb \
-	msm8998-9x55-mtp.dtb
+	msm8998-v2.1-interposer-sdm660-qrd.dtb
 endif
+
+dtb-$(CONFIG_ARCH_MSM8998) += \
+	cheeseburger-evb.dtb \
+	cheeseburger-v2.1-backup.dtb \
+	cheeseburger-v2.1-dvt1.dtb \
+	cheeseburger-v2.1-evb.dtb \
+	cheeseburger-v2.1-evt1.dtb \
+	cheeseburger-v2.1-evt2.dtb \
+	cheeseburger-v2.1-evt3.dtb \
+	cheeseburger-v2.1-pvt.dtb \
+	cheeseburger-v2.1-pvt1.dtb \
+	cheeseburger-v2.1-t0.dtb \
+	cheeseburger-v2.1-t1.dtb
 
 dtb-$(CONFIG_ARCH_MSMHAMSTER) += msmhamster-rumi.dtb
 
